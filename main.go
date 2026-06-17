@@ -125,7 +125,7 @@ func (s *server) handlePredict(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "inference failed")
 		return
 	}
-
+	//comment
 	log.Printf("predict: format=%s -> class=%d (%s) conf=%.4f", format, pred.ClassIndex, pred.ClassName, pred.Confidence)
 	writeJSON(w, http.StatusOK, predictResponse{
 		ClassIndex: pred.ClassIndex,
