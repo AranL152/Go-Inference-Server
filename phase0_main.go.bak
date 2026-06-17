@@ -1,0 +1,166 @@
+// Phase 0 GPU inference validation.
+//
+// Loads a ResNet-18 ONNX model, forces the CUDA execution provider, runs one
+// inference, and proves the work actually happened on the GPU (not a silent
+// CPU fallback) by checking that this process caused GPU memory to be used.
+package main
+
+import (
+	"fmt"
+	"os"
+	"os/exec"
+	"strconv"
+	"strings"
+
+	ort "github.com/yalue/onnxruntime_go"
+)
+
+const (
+	modelPath = "resnet18.onnx"
+	libPath   = "onnxruntime/lib/libonnxruntime.so"
+)
+
+func main() {
+	// Baseline GPU memory BEFORE we touch CUDA. If our run is real, this number
+	// must climb once ORT puts the model weights + CUDA context on the card.
+	memBefore := gpuMemUsedMiB()
+
+	// 1. Point the Go binding at the native ONNX Runtime .so, then start it up.
+	//    The binding dlopen()s this library at runtime, so the only "linking"
+	//    we do is handing it this path.
+	ort.SetSharedLibraryPath(libPath)
+	if err := ort.InitializeEnvironment(); err != nil {
+		fatal("initialize ONNX Runtime", err)
+	}
+	defer ort.DestroyEnvironment()
+
+	// 2. Read the model's tensor names/shapes instead of hard-coding them.
+	ins, outs, err := ort.GetInputOutputInfo(modelPath)
+	if err != nil {
+		fatal("read model input/output info", err)
+	}
+	inName, outName := ins[0].Name, outs[0].Name
+	fmt.Printf("Model input : %-22s shape %v\n", inName, ins[0].Dimensions)
+	fmt.Printf("Model output: %-22s shape %v\n", outName, outs[0].Dimensions)
+
+	// 3. Build session options and EXPLICITLY enable the CUDA execution provider.
+	//    This is the line that selects the GPU. device_id 0 = the RTX 4080.
+	options, err := ort.NewSessionOptions()
+	if err != nil {
+		fatal("create session options", err)
+	}
+	defer options.Destroy()
+
+	cudaOpts, err := ort.NewCUDAProviderOptions()
+	if err != nil {
+		fatal("create CUDA provider options", err)
+	}
+	defer cudaOpts.Destroy()
+	if err := cudaOpts.Update(map[string]string{"device_id": "0"}); err != nil {
+		fatal("configure CUDA provider", err)
+	}
+	if err := options.AppendExecutionProviderCUDA(cudaOpts); err != nil {
+		fatal("enable CUDA execution provider", err)
+	}
+
+	// 4. Shape the tensors. ResNet-18 expects one NCHW image: [1, 3, 224, 224].
+	//    We feed a dummy constant "image" — Phase 0 only cares that the GPU runs.
+	inputData := make([]float32, 1*3*224*224)
+	for i := range inputData {
+		inputData[i] = 0.5
+	}
+	inputTensor, err := ort.NewTensor(ort.NewShape(1, 3, 224, 224), inputData)
+	if err != nil {
+		fatal("create input tensor", err)
+	}
+	defer inputTensor.Destroy()
+
+	// 1000 ImageNet classes out.
+	outputTensor, err := ort.NewEmptyTensor[float32](ort.NewShape(1, 1000))
+	if err != nil {
+		fatal("create output tensor", err)
+	}
+	defer outputTensor.Destroy()
+
+	// 5. Create the session. With the CUDA EP active, ORT copies the model
+	//    weights onto the GPU here — this is what moves the memory needle.
+	session, err := ort.NewAdvancedSession(modelPath,
+		[]string{inName}, []string{outName},
+		[]ort.ArbitraryTensor{inputTensor},
+		[]ort.ArbitraryTensor{outputTensor},
+		options)
+	if err != nil {
+		fatal("create inference session", err)
+	}
+	defer session.Destroy()
+
+	// 6. Run a single inference on the GPU.
+	if err := session.Run(); err != nil {
+		fatal("run inference", err)
+	}
+
+	// 7. Read the 1000-way output and find the top-1 class.
+	out := outputTensor.GetData()
+	top, best := 0, out[0]
+	for i, v := range out {
+		if v > best {
+			best, top = v, i
+		}
+	}
+	fmt.Printf("\nOutput shape      : [1 %d]\n", len(out))
+	fmt.Printf("Top-1 class index : %d  (score %.4f)\n", top, best)
+
+	// 8. Prove the GPU did the work. ORT *silently* falls back to CPU if the
+	//    CUDA EP fails to initialize, so a successful Run() alone is not proof.
+	//    Real proof: our process is now holding GPU memory.
+	memAfter := gpuMemUsedMiB()
+	fmt.Printf("\nGPU memory used   : %d MiB -> %d MiB (delta %+d MiB)\n",
+		memBefore, memAfter, memAfter-memBefore)
+
+	pidOnGPU := processOnGPU()
+	if memAfter-memBefore > 50 || pidOnGPU {
+		fmt.Println("\n=== GREEN: inference executed on the CUDA execution provider (GPU). ===")
+		return
+	}
+	fmt.Println("\n=== RED: no GPU memory was allocated — ORT fell back to CPU. ===")
+	os.Exit(1)
+}
+
+// gpuMemUsedMiB returns total GPU memory in use, via nvidia-smi. This works in
+// WSL2 even when the per-process list does not.
+func gpuMemUsedMiB() int {
+	out, err := exec.Command("nvidia-smi",
+		"--query-gpu=memory.used", "--format=csv,noheader,nounits").Output()
+	if err != nil {
+		return -1
+	}
+	n, _ := strconv.Atoi(strings.TrimSpace(strings.Split(string(out), "\n")[0]))
+	return n
+}
+
+// processOnGPU reports whether our PID shows up in nvidia-smi's compute-app
+// list. This is the strongest signal, but WSL2 drivers often leave it empty,
+// so it's a bonus check rather than the primary one.
+func processOnGPU() bool {
+	pid := strconv.Itoa(os.Getpid())
+	out, err := exec.Command("nvidia-smi",
+		"--query-compute-apps=pid,used_memory", "--format=csv,noheader").Output()
+	if err != nil {
+		return false
+	}
+	text := strings.TrimSpace(string(out))
+	if text != "" {
+		fmt.Println("\nnvidia-smi compute apps:\n" + text)
+	}
+	for _, line := range strings.Split(text, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), pid+",") {
+			return true
+		}
+	}
+	return false
+}
+
+func fatal(stage string, err error) {
+	fmt.Fprintf(os.Stderr, "\n=== RED: failed at %q: %v ===\n", stage, err)
+	os.Exit(1)
+}

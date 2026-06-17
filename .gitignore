@@ -1,0 +1,15 @@
+# Compiled binaries / build artifacts
+/server
+/phase0
+/loadtest/loadtest
+
+# Vendored native libraries — too large for GitHub (>100MB/file) and
+# environment-specific. See SETUP.md for how to obtain them.
+/onnxruntime/
+/cudnn9/
+
+# Throwaway / scratch
+*.tmp
+
+# Local Claude Code settings (machine-specific)
+.claude/settings.local.json
