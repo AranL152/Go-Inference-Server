@@ -3,7 +3,7 @@
 // Wraps a single ONNX Runtime session (CUDA execution provider) that is created
 // ONCE at server startup and reused for every request. Creating a session per
 // request would re-upload the model weights to the GPU each time — wasteful.
-//
+// comment
 // Concurrency note (Phase 1): inference is deliberately serialized with a mutex.
 // The session holds one fixed input tensor and one fixed output tensor; we write
 // the next image into the input tensor's backing slice in place, then Run(). That
