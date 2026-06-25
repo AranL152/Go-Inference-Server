@@ -40,12 +40,22 @@ func preprocessReader(r io.Reader) ([]float32, string, error) {
 	return preprocess(img), format, nil
 }
 
-// preprocess turns a decoded image into the model's input tensor.
+// preprocess turns a decoded image into the model's input tensor. It is the
+// composition of three stages (resize → crop+normalize), each split out so the
+// per-stage cost can be benchmarked independently (see preprocess_bench_test.go).
 func preprocess(img image.Image) []float32 {
+	resized, cx, cy := resizeForModel(img)
+	return normalizeCHW(resized, cx, cy)
+}
+
+// resizeForModel converts img to RGBA and resizes its shorter side to 256 px
+// (preserving aspect ratio), returning the resized image and the center-crop
+// offset for the 224×224 window.
+func resizeForModel(img image.Image) (resized *image.RGBA, cx, cy int) {
 	src := toRGBA(img)
 	sw, sh := src.Rect.Dx(), src.Rect.Dy()
 
-	// Step 1: target size after resizing the shorter side to 256.
+	// Target size after resizing the shorter side to 256.
 	var rw, rh int
 	if sw < sh {
 		rw = resizeShort
@@ -54,13 +64,15 @@ func preprocess(img image.Image) []float32 {
 		rh = resizeShort
 		rw = int(math.Round(float64(resizeShort) * float64(sw) / float64(sh)))
 	}
-	resized := bilinearResize(src, rw, rh)
+	resized = bilinearResize(src, rw, rh)
+	cx = (rw - imageSize) / 2
+	cy = (rh - imageSize) / 2
+	return resized, cx, cy
+}
 
-	// Step 2: center-crop offsets.
-	cx := (rw - imageSize) / 2
-	cy := (rh - imageSize) / 2
-
-	// Steps 3+4: normalize into channel-planar NCHW layout.
+// normalizeCHW center-crops a 224×224 window at (cx,cy) and writes it as a
+// per-channel-normalized, channel-planar NCHW float tensor.
+func normalizeCHW(resized *image.RGBA, cx, cy int) []float32 {
 	plane := imageSize * imageSize
 	out := make([]float32, channels*plane)
 	for y := 0; y < imageSize; y++ {

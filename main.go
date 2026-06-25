@@ -33,6 +33,14 @@ func main() {
 	modelPath := flag.String("model", "resnet18.onnx", "path to the ONNX model")
 	labelsPath := flag.String("labels", "imagenet_classes.txt", "path to ImageNet class labels (optional)")
 	libPath := flag.String("lib", "onnxruntime/lib/libonnxruntime.so", "path to libonnxruntime.so")
+	maxBatch := flag.Int("max-batch", 32, "dynamic batching: max requests per inference batch")
+	maxWait := flag.Duration("max-wait", 5*time.Millisecond, "dynamic batching: max time to wait assembling a batch before running it")
+	quiet := flag.Bool("quiet", false, "suppress per-request prediction logging (avoids log contention under load)")
+	gpuPreprocess := flag.Bool("gpu-preprocess", false, "decode+resize images on the GPU via nvJPEG+NPP instead of on the CPU (Phase 4)")
+	gpuDecoders := flag.Int("gpu-decoders", 8, "size of the GPU decoder-context pool (max concurrent GPU decodes) when -gpu-preprocess is set")
+	cpuPreprocess := flag.Bool("cpu-preprocess", false, "decode images on the CPU via libjpeg-turbo (SIMD, 1/4 DCT scale) instead of Go's pure-Go image/jpeg, keeping decode off the GPU (Phase 6)")
+	cpuDecoders := flag.Int("cpu-decoders", 16, "size of the libjpeg-turbo decoder pool (max concurrent CPU decodes) when -cpu-preprocess is set")
+	maxInflight := flag.Int("max-inflight", 0, "backpressure: max concurrent in-flight requests (0 = unlimited); excess returns HTTP 503")
 	flag.Parse()
 
 	labels, err := loadLabels(*labelsPath)
@@ -43,11 +51,13 @@ func main() {
 	}
 
 	log.Printf("loading model %s onto GPU via CUDA execution provider...", *modelPath)
-	engine, err := NewEngine(*modelPath, *libPath, labels)
+	engine, err := NewEngine(*modelPath, *libPath, labels, *maxBatch, *maxWait)
 	if err != nil {
 		log.Fatalf("FATAL: could not initialize inference engine: %v", err)
 	}
 	defer engine.Close()
+	engine.SetMaxInflight(*maxInflight)
+	log.Printf("dynamic batching enabled: max-batch=%d, max-wait=%s, max-inflight=%d", *maxBatch, *maxWait, *maxInflight)
 
 	// Prove GPU placement the same way Phase 0 did: session creation must have
 	// allocated GPU memory. ORT silently falls back to CPU otherwise.
@@ -59,10 +69,38 @@ func main() {
 			engine.GPUDeltaMiB())
 	}
 
-	srv := &server{engine: engine}
+	// Optional GPU preprocessing path (Phase 4). When enabled, JPEG decode +
+	// resize run on the GPU (nvJPEG + NPP) instead of saturating the CPU, which
+	// the Phase 3/4 investigation identified as the real throughput ceiling.
+	if *gpuPreprocess && *cpuPreprocess {
+		log.Fatalf("FATAL: -gpu-preprocess and -cpu-preprocess are mutually exclusive")
+	}
+	var gpuPool *gpuDecoderPool
+	var cpuPool *cpuDecoderPool
+	switch {
+	case *gpuPreprocess:
+		gpuPool, err = newGPUDecoderPool(*gpuDecoders)
+		if err != nil {
+			log.Fatalf("FATAL: could not initialize GPU decoder pool: %v", err)
+		}
+		defer gpuPool.Close()
+		log.Printf("GPU preprocessing enabled: %d decoder contexts, nvJPEG backend=%s", *gpuDecoders, gpuPool.Backend())
+	case *cpuPreprocess:
+		cpuPool, err = newCPUDecoderPool(*cpuDecoders)
+		if err != nil {
+			log.Fatalf("FATAL: could not initialize CPU decoder pool: %v", err)
+		}
+		defer cpuPool.Close()
+		log.Printf("CPU preprocessing enabled: %d libjpeg-turbo decoders (SIMD, 1/4 DCT scale); GPU runs inference only", *cpuDecoders)
+	default:
+		log.Printf("CPU preprocessing (default, pure-Go image/jpeg); pass -cpu-preprocess (libjpeg-turbo) or -gpu-preprocess (nvJPEG)")
+	}
+
+	srv := &server{engine: engine, quiet: *quiet, gpuPool: gpuPool, cpuPool: cpuPool}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/predict", srv.handlePredict)
 	mux.HandleFunc("/health", srv.handleHealth)
+	mux.HandleFunc("/stats", srv.handleStats)
 
 	httpSrv := &http.Server{Addr: *addr, Handler: mux}
 
@@ -85,7 +123,10 @@ func main() {
 }
 
 type server struct {
-	engine *Engine
+	engine  *Engine
+	quiet   bool
+	gpuPool *gpuDecoderPool // non-nil when -gpu-preprocess is set
+	cpuPool *cpuDecoderPool // non-nil when -cpu-preprocess is set (libjpeg-turbo)
 }
 
 type predictResponse struct {
@@ -104,6 +145,14 @@ func (s *server) handlePredict(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Backpressure: take an in-flight slot BEFORE the expensive GPU decode, so
+	// overload is shed immediately rather than piling into the decoder pool.
+	if !s.engine.Acquire() {
+		writeError(w, http.StatusServiceUnavailable, "server busy, retry later")
+		return
+	}
+	defer s.engine.Release()
+
 	body, err := imageBody(r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -111,12 +160,45 @@ func (s *server) handlePredict(w http.ResponseWriter, r *http.Request) {
 	}
 	defer body.Close()
 
-	input, format, err := preprocessReader(body)
-	if err != nil {
-		// Covers malformed images and non-image / wrong-content-type bodies:
-		// the decoder can't identify the bytes as JPEG/PNG.
-		writeError(w, http.StatusBadRequest, "could not decode image (expected JPEG or PNG): "+err.Error())
-		return
+	var input []float32
+	format := "jpeg"
+	if s.cpuPool != nil {
+		// CPU path (libjpeg-turbo): SIMD decode keeps preprocessing off the GPU so
+		// the GPU runs inference only. JPEG-only (like the GPU path); PNGs aren't
+		// exercised by the load test.
+		raw, rerr := io.ReadAll(body)
+		if rerr != nil {
+			writeError(w, http.StatusBadRequest, "could not read image body: "+rerr.Error())
+			return
+		}
+		input, err = s.cpuPool.Preprocess(raw)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "could not decode image on CPU (expected JPEG): "+err.Error())
+			return
+		}
+	} else if s.gpuPool != nil {
+		// GPU path: nvJPEG needs the raw compressed bytes, so read the body and
+		// decode+resize on the GPU. (nvJPEG is JPEG-only; PNGs would need the CPU
+		// fallback — not exercised by the load test, which sends JPEG.)
+		raw, rerr := io.ReadAll(body)
+		if rerr != nil {
+			writeError(w, http.StatusBadRequest, "could not read image body: "+rerr.Error())
+			return
+		}
+		input, err = s.gpuPool.Preprocess(raw)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "could not decode/resize image on GPU (expected JPEG): "+err.Error())
+			return
+		}
+	} else {
+		// CPU path (default): decode+resize on the CPU.
+		input, format, err = preprocessReader(body)
+		if err != nil {
+			// Covers malformed images and non-image / wrong-content-type bodies:
+			// the decoder can't identify the bytes as JPEG/PNG.
+			writeError(w, http.StatusBadRequest, "could not decode image (expected JPEG or PNG): "+err.Error())
+			return
+		}
 	}
 
 	pred, err := s.engine.Predict(input)
@@ -126,12 +208,57 @@ func (s *server) handlePredict(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	
-	log.Printf("predict: format=%s -> class=%d (%s) conf=%.4f", format, pred.ClassIndex, pred.ClassName, pred.Confidence)
+	if !s.quiet {
+		log.Printf("predict: format=%s -> class=%d (%s) conf=%.4f", format, pred.ClassIndex, pred.ClassName, pred.Confidence)
+	}
 	writeJSON(w, http.StatusOK, predictResponse{
 		ClassIndex: pred.ClassIndex,
 		ClassName:  pred.ClassName,
 		Confidence: pred.Confidence,
 	})
+}
+
+// handleStats reports the timing breakdown used to locate the throughput
+// bottleneck (Phase 4 diagnostics). GET /stats returns the cumulative averages;
+// GET /stats?reset=1 zeroes the counters first (call between load levels to
+// measure one level in isolation).
+func (s *server) handleStats(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Get("reset") == "1" {
+		s.engine.ResetStats()
+		if s.gpuPool != nil {
+			s.gpuPool.ResetStats()
+		}
+		if s.cpuPool != nil {
+			s.cpuPool.ResetStats()
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"reset": true})
+		return
+	}
+	batches, reqs, avgBatch := s.engine.BatchStats()
+	avgWaitMs, avgRunMs, avgBatchMs, busyFrac := s.engine.TimingStats()
+	out := map[string]any{
+		"requests":            reqs,
+		"batches":             batches,
+		"avg_batch_size":      avgBatch,
+		"avg_queue_wait_ms":   avgWaitMs,  // submit -> batch run start
+		"avg_infer_run_ms":    avgRunMs,   // just session.Run() per batch
+		"avg_runbatch_ms":     avgBatchMs, // assemble tensor + Run + split logits
+		"collector_busy_frac": busyFrac,   // infer lane: processing vs blocked on empty queue
+		"rejects":             s.engine.Rejects(),
+	}
+	if s.gpuPool != nil {
+		d, n, cnt := s.gpuPool.PreprocStats()
+		out["avg_gpu_decode_ms"] = d
+		out["avg_cpu_normalize_ms"] = n
+		out["preproc_count"] = cnt
+	}
+	if s.cpuPool != nil {
+		d, n, cnt := s.cpuPool.PreprocStats()
+		out["avg_cpu_decode_ms"] = d
+		out["avg_cpu_resize_normalize_ms"] = n
+		out["preproc_count"] = cnt
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {

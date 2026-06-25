@@ -41,6 +41,9 @@ func main() {
 	imageNames := flag.String("imagefiles", "dog.jpg,cat.jpg", "comma-separated image filenames within -images")
 	gpuInterval := flag.Duration("gpu-interval", 100*time.Millisecond, "nvidia-smi poll interval during a run")
 	outPrefix := flag.String("out", "phase2_results", "prefix for raw results files (.json/.csv)")
+	ratesCSV := flag.String("rates", "", "OPEN-LOOP mode: comma-separated offered rates (req/s) to fire regardless of responses; if set, overrides closed-loop -levels")
+	rateDur := flag.Duration("rate-dur", 15*time.Second, "open-loop: measurement duration per rate")
+	maxInflight := flag.Int("max-inflight", 8192, "open-loop: cap on concurrent in-flight requests (overruns counted, not blocked)")
 	flag.Parse()
 
 	levels := parseInts(*levelsCSV)
@@ -71,6 +74,27 @@ func main() {
 	if err := preflight(client, url, images[0]); err != nil {
 		log.Fatalf("server not reachable at %s: %v", url, err)
 	}
+
+	// Open-loop mode: fire at fixed offered rates regardless of responses. This
+	// decouples offered load from the closed-loop client and tells us whether the
+	// ~1,460 plateau is the server or the measurement.
+	if *ratesCSV != "" {
+		rates := parseInts(*ratesCSV)
+		log.Printf("server OK at %s — OPEN-LOOP, offered rates %v req/s, %s each", url, rates, *rateDur)
+		var oresults []OpenResult
+		for _, rate := range rates {
+			gpu := startGPUSampler(*gpuInterval)
+			log.Printf("--- offered %d req/s for %s ---", rate, *rateDur)
+			r := runOpenLoop(client, url, images, rate, *rateDur, *maxInflight)
+			r.GPU = gpu.stop()
+			oresults = append(oresults, r)
+			log.Printf("    -> achieved %.1f req/s | p50=%.1fms p95=%.1fms p99=%.1fms | overruns=%d errors=%d | GPU util avg=%.0f%%",
+				r.Achieved, r.P50ms, r.P95ms, r.P99ms, r.Overruns, r.Errors, r.GPU.utilAvg)
+		}
+		printOpenTable(oresults)
+		return
+	}
+
 	log.Printf("server OK at %s — sweeping concurrency levels %v, %d requests each", url, levels, *perLevel)
 
 	var results []Result
@@ -209,6 +233,99 @@ func meanMs(lat []time.Duration) float64 {
 		sum += d
 	}
 	return float64((sum / time.Duration(len(lat))).Microseconds()) / 1000.0
+}
+
+// --- open-loop mode -------------------------------------------------------
+
+// OpenResult holds the stats for one offered-rate open-loop run.
+type OpenResult struct {
+	OfferedRate int
+	Achieved    float64
+	Completed   int
+	Errors      int
+	Overruns    int // ticks skipped because max-inflight was reached
+	P50ms       float64
+	P95ms       float64
+	P99ms       float64
+	Meanms      float64
+	GPU         gpuSummary
+}
+
+// runOpenLoop fires requests at a fixed offered rate for `dur`, independent of
+// when responses come back. A buffered semaphore caps concurrent in-flight
+// requests; if it's full at a tick, that tick is counted as an overrun (the
+// server can't keep up) rather than blocking the generator — preserving the
+// open-loop property.
+func runOpenLoop(client *http.Client, url string, images [][]byte, rate int, dur time.Duration, maxInflight int) OpenResult {
+	interval := time.Duration(float64(time.Second) / float64(rate))
+	sem := make(chan struct{}, maxInflight)
+
+	var mu sync.Mutex
+	var lat []time.Duration
+	var errCount, overruns int64
+	var imgIdx uint64
+
+	var wg sync.WaitGroup
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	deadline := time.After(dur)
+	start := time.Now()
+
+loop:
+	for {
+		select {
+		case <-deadline:
+			break loop
+		case <-ticker.C:
+			select {
+			case sem <- struct{}{}:
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					defer func() { <-sem }()
+					img := images[int(atomic.AddUint64(&imgIdx, 1))%len(images)]
+					t0 := time.Now()
+					err := doRequest(client, url, img)
+					d := time.Since(t0)
+					if err != nil {
+						atomic.AddInt64(&errCount, 1)
+						return
+					}
+					mu.Lock()
+					lat = append(lat, d)
+					mu.Unlock()
+				}()
+			default:
+				atomic.AddInt64(&overruns, 1) // in-flight cap hit; don't block
+			}
+		}
+	}
+	wg.Wait()
+	elapsed := time.Since(start)
+
+	sort.Slice(lat, func(i, j int) bool { return lat[i] < lat[j] })
+	return OpenResult{
+		OfferedRate: rate,
+		Achieved:    float64(len(lat)) / elapsed.Seconds(),
+		Completed:   len(lat),
+		Errors:      int(errCount),
+		Overruns:    int(overruns),
+		P50ms:       percentileMs(lat, 0.50),
+		P95ms:       percentileMs(lat, 0.95),
+		P99ms:       percentileMs(lat, 0.99),
+		Meanms:      meanMs(lat),
+	}
+}
+
+func printOpenTable(results []OpenResult) {
+	fmt.Println()
+	fmt.Println("| Offered req/s | Achieved req/s | p50 (ms) | p95 (ms) | p99 (ms) | mean (ms) | overruns | errors | GPU util avg |")
+	fmt.Println("|--------------:|---------------:|---------:|---------:|---------:|----------:|---------:|-------:|-------------:|")
+	for _, r := range results {
+		fmt.Printf("| %13d | %14.1f | %8.1f | %8.1f | %8.1f | %9.1f | %8d | %6d | %11.0f%% |\n",
+			r.OfferedRate, r.Achieved, r.P50ms, r.P95ms, r.P99ms, r.Meanms, r.Overruns, r.Errors, r.GPU.utilAvg)
+	}
+	fmt.Println()
 }
 
 // --- GPU sampling ---------------------------------------------------------
