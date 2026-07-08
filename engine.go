@@ -54,6 +54,14 @@ const (
 	inputElems = channels * imageSize * imageSize
 )
 
+// inputPool recycles per-request NCHW tensors (Phase 7: these were ~30% of all
+// allocation, ~600KB per request). Every producer (preprocessTurbo, normalizeCHW,
+// normalizeRGBI) overwrites all inputElems elements, so Gets need no zeroing.
+// The HTTP handler returns the slice here after Predict — see the ownership note
+// on Predict. Storing the slice header boxes it into an interface (24B alloc per
+// Put); negligible next to the 600KB it saves.
+var inputPool = sync.Pool{New: func() any { return make([]float32, inputElems) }}
+
 // Prediction is the result of one inference.
 type Prediction struct {
 	ClassIndex int
@@ -81,6 +89,7 @@ type batchRequest struct {
 // the inferrer running the PREVIOUS batch.
 type packedBatch struct {
 	inT   ort.Value
+	raw   []float32       // full-capacity staging buffer backing inT; returned to batchBufPool
 	batch []*batchRequest // ordered; row i of the output belongs to batch[i]
 }
 
@@ -116,6 +125,13 @@ type Engine struct {
 	// Batching policy (configurable so it can be tuned later).
 	maxBatch int
 	maxWait  time.Duration
+
+	// batchBufPool recycles the batch staging buffer (Phase 7: ~14MB/batch was
+	// ~30% of all allocation). Buffers are always maxBatch*inputElems long;
+	// packAndSend slices to the realized batch size (NewTensor requires exact
+	// length). Returned in inferLoop right after inT.Destroy() — ORT pins the Go
+	// slice only while the OrtValue lives.
+	batchBufPool sync.Pool
 
 	submitCh chan *batchRequest   // handlers -> gatherer
 	inferCh  chan *packedBatch    // gatherer -> infer lane
@@ -248,6 +264,7 @@ func NewEngine(modelPath, libPath string, labels []string, maxBatch int, maxWait
 		stopCh:   make(chan struct{}),
 		doneCh:   make(chan struct{}),
 	}
+	e.batchBufPool.New = func() any { return make([]float32, maxBatch*inputElems) }
 
 	// CUDA execution provider — the line that puts work on the RTX 4080.
 	e.options, err = ort.NewSessionOptions()
@@ -346,6 +363,12 @@ func (e *Engine) Release() {
 // result comes back. This is the only entry point handlers use; they never touch
 // the session directly. Backpressure is handled by Acquire/Release around the
 // whole request (including decode), not here.
+//
+// Ownership: the engine copies input during packing and drops its reference, so
+// once Predict returns the caller is the sole owner and SHOULD recycle the slice
+// via inputPool.Put (the HTTP handler does). The engine deliberately does not Put
+// it itself: tests share one tensor across many concurrent Predicts, and pooling
+// a slice that other calls still read would corrupt batches.
 func (e *Engine) Predict(input []float32) (Prediction, error) {
 	if len(input) != inputElems {
 		return Prediction{}, fmt.Errorf("input length %d, want %d", len(input), inputElems)
@@ -417,16 +440,19 @@ func (e *Engine) packAndSend(batch []*batchRequest) {
 	if n == 0 {
 		return
 	}
-	data := make([]float32, n*inputElems)
+	raw := e.batchBufPool.Get().([]float32)
+	data := raw[:n*inputElems] // NewTensor requires the exact batch length
 	for i, r := range batch {
 		copy(data[i*inputElems:(i+1)*inputElems], r.input)
+		r.input = nil // engine is done with the caller's tensor after this copy
 	}
 	inT, err := ort.NewTensor(ort.NewShape(int64(n), channels, imageSize, imageSize), data)
 	if err != nil {
+		e.batchBufPool.Put(raw)
 		failBatch(batch, fmt.Errorf("create input tensor: %w", err))
 		return
 	}
-	e.inferCh <- &packedBatch{inT: inT, batch: batch}
+	e.inferCh <- &packedBatch{inT: inT, raw: raw, batch: batch}
 }
 
 // inferLoop is the single GPU-owning lane: it runs one packed batch at a time and
@@ -465,6 +491,7 @@ func (e *Engine) inferLoop() {
 		runErr := e.session.Run([]ort.Value{pb.inT}, outputs)
 		atomic.AddInt64(&e.statRunNs, int64(time.Since(runT)))
 		pb.inT.Destroy()
+		e.batchBufPool.Put(pb.raw) // safe once the OrtValue no longer pins it
 		if runErr != nil {
 			failBatch(pb.batch, fmt.Errorf("inference run: %w", runErr))
 			atomic.AddInt64(&e.statBusyNs, int64(time.Since(busyStart)))

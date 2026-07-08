@@ -74,7 +74,7 @@ func resizeForModel(img image.Image) (resized *image.RGBA, cx, cy int) {
 // per-channel-normalized, channel-planar NCHW float tensor.
 func normalizeCHW(resized *image.RGBA, cx, cy int) []float32 {
 	plane := imageSize * imageSize
-	out := make([]float32, channels*plane)
+	out := inputPool.Get().([]float32) // fully overwritten below; returned by packAndSend
 	for y := 0; y < imageSize; y++ {
 		for x := 0; x < imageSize; x++ {
 			off := resized.PixOffset(cx+x, cy+y)

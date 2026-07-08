@@ -12,6 +12,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -19,9 +20,12 @@ import (
 	"io"
 	"log"
 	"net/http"
+	_ "net/http/pprof" // registers /debug/pprof/* on http.DefaultServeMux (Phase 7 diagnostics)
 	"os"
 	"os/signal"
+	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -72,12 +76,25 @@ func main() {
 	// Optional GPU preprocessing path (Phase 4). When enabled, JPEG decode +
 	// resize run on the GPU (nvJPEG + NPP) instead of saturating the CPU, which
 	// the Phase 3/4 investigation identified as the real throughput ceiling.
-	if *gpuPreprocess && *cpuPreprocess {
-		log.Fatalf("FATAL: -gpu-preprocess and -cpu-preprocess are mutually exclusive")
-	}
 	var gpuPool *gpuDecoderPool
 	var cpuPool *cpuDecoderPool
+	var hybrid *hybridPreprocessor
 	switch {
+	case *gpuPreprocess && *cpuPreprocess:
+		// Hybrid (Phase 7): CPU decodes while it has slack; GPU is overflow-only.
+		cpuPool, err = newCPUDecoderPool(*cpuDecoders)
+		if err != nil {
+			log.Fatalf("FATAL: could not initialize CPU decoder pool: %v", err)
+		}
+		defer cpuPool.Close()
+		gpuPool, err = newGPUDecoderPool(*gpuDecoders)
+		if err != nil {
+			log.Fatalf("FATAL: could not initialize GPU decoder pool: %v", err)
+		}
+		defer gpuPool.Close()
+		hybrid = &hybridPreprocessor{cpu: cpuPool, gpu: gpuPool}
+		log.Printf("HYBRID preprocessing enabled: %d CPU (libjpeg-turbo) decoders primary, %d GPU (nvJPEG %s) decoders as overflow",
+			*cpuDecoders, *gpuDecoders, gpuPool.Backend())
 	case *gpuPreprocess:
 		gpuPool, err = newGPUDecoderPool(*gpuDecoders)
 		if err != nil {
@@ -96,11 +113,14 @@ func main() {
 		log.Printf("CPU preprocessing (default, pure-Go image/jpeg); pass -cpu-preprocess (libjpeg-turbo) or -gpu-preprocess (nvJPEG)")
 	}
 
-	srv := &server{engine: engine, quiet: *quiet, gpuPool: gpuPool, cpuPool: cpuPool}
+	srv := &server{engine: engine, quiet: *quiet, gpuPool: gpuPool, cpuPool: cpuPool, hybrid: hybrid}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/predict", srv.handlePredict)
 	mux.HandleFunc("/health", srv.handleHealth)
 	mux.HandleFunc("/stats", srv.handleStats)
+	// Profiling (Phase 7): net/http/pprof registers on the default mux; expose it
+	// through ours so `go tool pprof http://.../debug/pprof/{profile,allocs}` works.
+	mux.Handle("/debug/pprof/", http.DefaultServeMux)
 
 	httpSrv := &http.Server{Addr: *addr, Handler: mux}
 
@@ -125,8 +145,9 @@ func main() {
 type server struct {
 	engine  *Engine
 	quiet   bool
-	gpuPool *gpuDecoderPool // non-nil when -gpu-preprocess is set
-	cpuPool *cpuDecoderPool // non-nil when -cpu-preprocess is set (libjpeg-turbo)
+	gpuPool *gpuDecoderPool     // non-nil when -gpu-preprocess is set
+	cpuPool *cpuDecoderPool     // non-nil when -cpu-preprocess is set (libjpeg-turbo)
+	hybrid  *hybridPreprocessor // non-nil when BOTH are set (Phase 7: CPU primary, GPU overflow)
 }
 
 type predictResponse struct {
@@ -137,6 +158,24 @@ type predictResponse struct {
 
 type errorResponse struct {
 	Error string `json:"error"`
+}
+
+// bodyBufPool recycles request-body staging buffers (Phase 7: io.ReadAll's
+// doubling growth was ~40% of all allocation at 1,900 req/s). The buffer must
+// stay checked out until Preprocess returns — the cgo decoders read the raw
+// bytes in place.
+var bodyBufPool = sync.Pool{New: func() any { return new(bytes.Buffer) }}
+
+// readBodyPooled drains r into a pooled buffer. On success the caller owns the
+// buffer and must return it via bodyBufPool.Put when done with buf.Bytes().
+func readBodyPooled(r io.Reader) (*bytes.Buffer, error) {
+	buf := bodyBufPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	if _, err := buf.ReadFrom(r); err != nil {
+		bodyBufPool.Put(buf)
+		return nil, err
+	}
+	return buf, nil
 }
 
 func (s *server) handlePredict(w http.ResponseWriter, r *http.Request) {
@@ -162,32 +201,30 @@ func (s *server) handlePredict(w http.ResponseWriter, r *http.Request) {
 
 	var input []float32
 	format := "jpeg"
-	if s.cpuPool != nil {
-		// CPU path (libjpeg-turbo): SIMD decode keeps preprocessing off the GPU so
-		// the GPU runs inference only. JPEG-only (like the GPU path); PNGs aren't
-		// exercised by the load test.
-		raw, rerr := io.ReadAll(body)
+	if s.hybrid != nil || s.cpuPool != nil || s.gpuPool != nil {
+		// All three raw-JPEG paths (hybrid / libjpeg-turbo / nvJPEG) need the
+		// compressed bytes; read them into a pooled buffer (Phase 7). JPEG-only;
+		// PNGs aren't exercised by the load test.
+		buf, rerr := readBodyPooled(body)
 		if rerr != nil {
 			writeError(w, http.StatusBadRequest, "could not read image body: "+rerr.Error())
 			return
 		}
-		input, err = s.cpuPool.Preprocess(raw)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "could not decode image on CPU (expected JPEG): "+err.Error())
-			return
+		switch {
+		case s.hybrid != nil:
+			// Hybrid (Phase 7): CPU decoders while they have slack, GPU overflow.
+			input, err = s.hybrid.Preprocess(buf.Bytes())
+		case s.cpuPool != nil:
+			// CPU path (libjpeg-turbo): SIMD decode keeps preprocessing off the
+			// GPU so the GPU runs inference only.
+			input, err = s.cpuPool.Preprocess(buf.Bytes())
+		default:
+			// GPU path: nvJPEG + NPP decode+resize on the GPU.
+			input, err = s.gpuPool.Preprocess(buf.Bytes())
 		}
-	} else if s.gpuPool != nil {
-		// GPU path: nvJPEG needs the raw compressed bytes, so read the body and
-		// decode+resize on the GPU. (nvJPEG is JPEG-only; PNGs would need the CPU
-		// fallback — not exercised by the load test, which sends JPEG.)
-		raw, rerr := io.ReadAll(body)
-		if rerr != nil {
-			writeError(w, http.StatusBadRequest, "could not read image body: "+rerr.Error())
-			return
-		}
-		input, err = s.gpuPool.Preprocess(raw)
+		bodyBufPool.Put(buf) // decode is done with the raw bytes
 		if err != nil {
-			writeError(w, http.StatusBadRequest, "could not decode/resize image on GPU (expected JPEG): "+err.Error())
+			writeError(w, http.StatusBadRequest, "could not decode image (expected JPEG): "+err.Error())
 			return
 		}
 	} else {
@@ -202,6 +239,8 @@ func (s *server) handlePredict(w http.ResponseWriter, r *http.Request) {
 	}
 
 	pred, err := s.engine.Predict(input)
+	// Predict copied the tensor into the batch buffer; recycle it (Phase 7).
+	inputPool.Put(input)
 	if err != nil {
 		log.Printf("inference error: %v", err)
 		writeError(w, http.StatusInternalServerError, "inference failed")
@@ -258,6 +297,16 @@ func (s *server) handleStats(w http.ResponseWriter, r *http.Request) {
 		out["avg_cpu_resize_normalize_ms"] = n
 		out["preproc_count"] = cnt
 	}
+	if s.hybrid != nil {
+		c, g := s.hybrid.Split()
+		out["decode_cpu"] = c
+		out["decode_gpu"] = g
+	}
+	// GC observability (Phase 7): cumulative allocation and GC count since start.
+	var ms runtime.MemStats
+	runtime.ReadMemStats(&ms)
+	out["total_alloc_mb"] = float64(ms.TotalAlloc) / (1 << 20)
+	out["num_gc"] = ms.NumGC
 	writeJSON(w, http.StatusOK, out)
 }
 

@@ -438,11 +438,17 @@ func (p *gpuDecoderPool) Backend() nvjpegBackend { return p.backend }
 // entirely via the GPU (nvJPEG decode + NPP resize) plus a cheap CPU normalize.
 // Drop-in replacement for the CPU preprocessReader's output.
 func (p *gpuDecoderPool) Preprocess(jpeg []byte) ([]float32, error) {
+	return p.preprocessWith(<-p.free, jpeg)
+}
+
+// preprocessWith runs decode+normalize on an already-checked-out context and
+// returns it to the pool. Split from Preprocess so the hybrid router (Phase 7)
+// can select a free decoder across multiple pools before committing to one.
+func (p *gpuDecoderPool) preprocessWith(d *gpuDecoder, jpeg []byte) ([]float32, error) {
+	defer func() { p.free <- d }()
 	if len(jpeg) == 0 {
 		return nil, fmt.Errorf("empty jpeg input")
 	}
-	d := <-p.free
-	defer func() { p.free <- d }()
 
 	rgb := make([]byte, imageSize*imageSize*3)
 	tDecode := time.Now()
@@ -485,7 +491,7 @@ func (p *gpuDecoderPool) Close() {
 // the cheap (~0.26ms) tail of preprocessing kept on the CPU.
 func normalizeRGBI(rgb []byte) []float32 {
 	plane := imageSize * imageSize
-	out := make([]float32, channels*plane)
+	out := inputPool.Get().([]float32) // fully overwritten below; returned by packAndSend
 	for i := 0; i < plane; i++ {
 		r := float32(rgb[i*3+0]) / 255.0
 		g := float32(rgb[i*3+1]) / 255.0

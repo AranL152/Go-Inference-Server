@@ -82,7 +82,7 @@ func preprocessTurbo(img *image.RGBA) []float32 {
 	pix := img.Pix
 	stride := img.Stride
 	plane := imageSize * imageSize
-	out := make([]float32, channels*plane)
+	out := inputPool.Get().([]float32) // fully overwritten below; returned by packAndSend
 
 	for y := 0; y < imageSize; y++ {
 		fy := (float32(cy+y)+0.5)*scaleY - 0.5
@@ -252,7 +252,13 @@ func newCPUDecoderPool(size int) (*cpuDecoderPool, error) {
 // entirely on the CPU (libjpeg-turbo decode@1/4 + the existing resize/normalize).
 // Drop-in replacement for gpuDecoderPool.Preprocess / preprocessReader's output.
 func (p *cpuDecoderPool) Preprocess(jpeg []byte) ([]float32, error) {
-	d := <-p.free
+	return p.preprocessWith(<-p.free, jpeg)
+}
+
+// preprocessWith runs decode+normalize on an already-checked-out decoder and
+// returns it to the pool. Split from Preprocess so the hybrid router (Phase 7)
+// can select a free decoder across multiple pools before committing to one.
+func (p *cpuDecoderPool) preprocessWith(d *jpegDecoder, jpeg []byte) ([]float32, error) {
 	defer func() { p.free <- d }()
 
 	tDecode := time.Now()
