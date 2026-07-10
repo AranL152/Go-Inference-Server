@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -28,9 +29,21 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unsafe"
 )
 
 const maxImageBytes = 20 << 20 // 20 MiB request-body cap
+
+// rawTensorContentType marks a /predict body that is already the preprocessed
+// NCHW float32 tensor (native byte order, length inputElems*4). It exists to
+// measure the server's decode-free ceiling: HTTP + batching + inference only.
+const rawTensorContentType = "application/x-raw-tensor"
+
+// rawRGBContentType marks a /predict body that is a decoded, resized,
+// center-cropped 224×224 image as interleaved RGB uint8 (150,528 bytes) —
+// the network-realistic raw contract (Phase 8 Task 4): 4x smaller bodies than
+// x-raw-tensor, with the server doing only the normalize-into-NCHW step.
+const rawRGBContentType = "application/x-raw-rgb"
 
 func main() {
 	addr := flag.String("addr", ":8080", "HTTP listen address")
@@ -45,6 +58,7 @@ func main() {
 	cpuPreprocess := flag.Bool("cpu-preprocess", false, "decode images on the CPU via libjpeg-turbo (SIMD, 1/4 DCT scale) instead of Go's pure-Go image/jpeg, keeping decode off the GPU (Phase 6)")
 	cpuDecoders := flag.Int("cpu-decoders", 16, "size of the libjpeg-turbo decoder pool (max concurrent CPU decodes) when -cpu-preprocess is set")
 	maxInflight := flag.Int("max-inflight", 0, "backpressure: max concurrent in-flight requests (0 = unlimited); excess returns HTTP 503")
+	inferLanes := flag.Int("infer-lanes", 1, "concurrent inference lanes on the shared ORT session (Phase 8: >1 overlaps H2D copy with GPU compute)")
 	flag.Parse()
 
 	labels, err := loadLabels(*labelsPath)
@@ -55,13 +69,14 @@ func main() {
 	}
 
 	log.Printf("loading model %s onto GPU via CUDA execution provider...", *modelPath)
+	numInferLanes = *inferLanes // must be set before NewEngine spawns the pipeline
 	engine, err := NewEngine(*modelPath, *libPath, labels, *maxBatch, *maxWait)
 	if err != nil {
 		log.Fatalf("FATAL: could not initialize inference engine: %v", err)
 	}
 	defer engine.Close()
 	engine.SetMaxInflight(*maxInflight)
-	log.Printf("dynamic batching enabled: max-batch=%d, max-wait=%s, max-inflight=%d", *maxBatch, *maxWait, *maxInflight)
+	log.Printf("dynamic batching enabled: max-batch=%d, max-wait=%s, max-inflight=%d, infer-lanes=%d", *maxBatch, *maxWait, *maxInflight, *inferLanes)
 
 	// Prove GPU placement the same way Phase 0 did: session creation must have
 	// allocated GPU memory. ORT silently falls back to CPU otherwise.
@@ -201,7 +216,41 @@ func (s *server) handlePredict(w http.ResponseWriter, r *http.Request) {
 
 	var input []float32
 	format := "jpeg"
-	if s.hybrid != nil || s.cpuPool != nil || s.gpuPool != nil {
+	if strings.HasPrefix(r.Header.Get("Content-Type"), rawTensorContentType) {
+		// Raw-tensor path: the client already did decode+resize+normalize; the
+		// body is the tensor itself, so this measures everything EXCEPT decode.
+		buf, rerr := readBodyPooled(body)
+		if rerr != nil {
+			writeError(w, http.StatusBadRequest, "could not read tensor body: "+rerr.Error())
+			return
+		}
+		if buf.Len() != inputElems*4 {
+			bodyBufPool.Put(buf)
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("raw tensor must be %d bytes (3x224x224 float32), got %d", inputElems*4, buf.Len()))
+			return
+		}
+		input = inputPool.Get().([]float32)
+		copy(unsafe.Slice((*byte)(unsafe.Pointer(&input[0])), inputElems*4), buf.Bytes())
+		bodyBufPool.Put(buf)
+		format = "raw"
+	} else if strings.HasPrefix(r.Header.Get("Content-Type"), rawRGBContentType) {
+		// Raw-RGB path: client did decode+resize+crop; server does only the
+		// /255 + mean/std normalize into the pooled NCHW tensor (~0.3 ms).
+		buf, rerr := readBodyPooled(body)
+		if rerr != nil {
+			writeError(w, http.StatusBadRequest, "could not read rgb body: "+rerr.Error())
+			return
+		}
+		if buf.Len() != inputElems {
+			bodyBufPool.Put(buf)
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("raw rgb must be %d bytes (224x224x3 uint8), got %d", inputElems, buf.Len()))
+			return
+		}
+		input = inputPool.Get().([]float32)
+		normalizeRGB8(buf.Bytes(), input)
+		bodyBufPool.Put(buf)
+		format = "raw-rgb"
+	} else if s.hybrid != nil || s.cpuPool != nil || s.gpuPool != nil {
 		// All three raw-JPEG paths (hybrid / libjpeg-turbo / nvJPEG) need the
 		// compressed bytes; read them into a pooled buffer (Phase 7). JPEG-only;
 		// PNGs aren't exercised by the load test.

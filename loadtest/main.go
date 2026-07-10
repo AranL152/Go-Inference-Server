@@ -44,6 +44,8 @@ func main() {
 	ratesCSV := flag.String("rates", "", "OPEN-LOOP mode: comma-separated offered rates (req/s) to fire regardless of responses; if set, overrides closed-loop -levels")
 	rateDur := flag.Duration("rate-dur", 15*time.Second, "open-loop: measurement duration per rate")
 	maxInflight := flag.Int("max-inflight", 8192, "open-loop: cap on concurrent in-flight requests (overruns counted, not blocked)")
+	raw := flag.Bool("raw", false, "send pre-decoded raw float32 tensors instead of JPEGs (decode-free ceiling probe; server skips all preprocessing)")
+	rawRGB := flag.Bool("raw-rgb", false, "send decoded 224x224 uint8 RGB images (network-realistic raw contract; server does normalize only)")
 	flag.Parse()
 
 	levels := parseInts(*levelsCSV)
@@ -52,6 +54,34 @@ func main() {
 	}
 
 	images := loadImages(*imagesDir, strings.Split(*imageNames, ","))
+	if *raw && *rawRGB {
+		log.Fatal("-raw and -raw-rgb are mutually exclusive")
+	}
+	if *raw {
+		// Preprocess once client-side; every request then ships the finished
+		// tensor and the server does HTTP + batching + inference only.
+		for i, img := range images {
+			t, err := rawTensorPayload(img)
+			if err != nil {
+				log.Fatalf("raw preprocess image %d: %v", i, err)
+			}
+			images[i] = t
+		}
+		contentType = rawContentType
+		log.Printf("RAW mode: sending %d-byte preprocessed tensors (decode-free ceiling probe)", rawTensorBytes)
+	}
+	if *rawRGB {
+		// Decode+resize+crop once client-side; the server does normalize only.
+		for i, img := range images {
+			t, err := rawRGBPayload(img)
+			if err != nil {
+				log.Fatalf("raw-rgb preprocess image %d: %v", i, err)
+			}
+			images[i] = t
+		}
+		contentType = rawRGBContentType
+		log.Printf("RAW-RGB mode: sending %d-byte uint8 RGB images (server normalizes only)", rawRGBBytes)
+	}
 	url := strings.TrimRight(*addr, "/") + "/predict"
 
 	// One shared client. Crucially, allow enough idle keep-alive connections per
@@ -174,8 +204,17 @@ func runLevel(client *http.Client, url string, images [][]byte, concurrency, tot
 	return all, int(errCount), elapsed
 }
 
+// contentType is what doRequest sends; -raw switches it to the server's
+// raw-tensor marker so the body bypasses image decoding.
+var contentType = "application/octet-stream"
+
+const (
+	rawContentType    = "application/x-raw-tensor"
+	rawRGBContentType = "application/x-raw-rgb"
+)
+
 func doRequest(client *http.Client, url string, body []byte) error {
-	resp, err := client.Post(url, "application/octet-stream", bytes.NewReader(body))
+	resp, err := client.Post(url, contentType, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}

@@ -90,6 +90,23 @@ func normalizeCHW(resized *image.RGBA, cx, cy int) []float32 {
 	return out
 }
 
+// normalizeRGB8 converts a 224×224 interleaved-RGB uint8 buffer (the
+// application/x-raw-rgb body) into the per-channel-normalized NCHW float
+// tensor. The /255 and mean/std are folded into one multiply-add per value.
+func normalizeRGB8(pix []byte, out []float32) {
+	const plane = imageSize * imageSize
+	var scale, bias [channels]float32
+	for c := 0; c < channels; c++ {
+		scale[c] = 1.0 / (255.0 * imagenetStd[c])
+		bias[c] = -imagenetMean[c] / imagenetStd[c]
+	}
+	for i := 0; i < plane; i++ {
+		out[0*plane+i] = float32(pix[i*3])*scale[0] + bias[0]
+		out[1*plane+i] = float32(pix[i*3+1])*scale[1] + bias[1]
+		out[2*plane+i] = float32(pix[i*3+2])*scale[2] + bias[2]
+	}
+}
+
 // toRGBA returns img as *image.RGBA, copying only if it isn't already one.
 func toRGBA(img image.Image) *image.RGBA {
 	if rgba, ok := img.(*image.RGBA); ok && rgba.Rect.Min == image.Pt(0, 0) {

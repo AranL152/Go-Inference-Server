@@ -36,14 +36,21 @@ import (
 // instead of building an unbounded queue (the Phase 4 latency-collapse failure).
 var ErrServerBusy = errors.New("server busy: in-flight limit reached")
 
-// Pipeline tuning. One infer lane (the probe showed multiple sessions hurt); the
-// channels are buffered just enough to let the gatherer pack the next batch and
-// the workers drain results while the lane runs.
+// Pipeline tuning. One infer lane by default (the Phase 5 probe showed multiple
+// SESSIONS hurt); the channels are buffered just enough to let the gatherer pack
+// the next batch and the workers drain results while the lane runs.
 const (
 	inferChDepth = 2 // packed batches the gatherer may stay ahead by
 	unpackChDepth = 16
 	numUnpackers  = 4 // split logits + reply in parallel, off the infer lane
 )
+
+// numInferLanes is how many inferLoop goroutines run concurrent session.Run
+// calls on the ONE shared session (ORT sessions are thread-safe). Phase 8: >1
+// overlaps one lane's implicit H2D copy inside Run with another lane's GPU
+// compute. Set from the -infer-lanes flag BEFORE NewEngine; default 1 keeps
+// Phase 5-7 behavior exactly.
+var numInferLanes = 1
 
 // ResNet-18 (resnet18-v1-7, GluonCV resnetv15) tensor geometry.
 const (
@@ -139,6 +146,7 @@ type Engine struct {
 	stopCh   chan struct{}        // closed to ask the pipeline to drain + exit
 	doneCh   chan struct{}        // closed once all stages have exited
 	unpackWG sync.WaitGroup       // tracks the unpack workers
+	inferWG  sync.WaitGroup       // tracks the infer lanes; last one out closes unpackCh
 	started  bool                 // true once the pipeline goroutines are running
 
 	// inflight is a counting semaphore bounding concurrent in-flight requests
@@ -300,13 +308,23 @@ func NewEngine(modelPath, libPath string, labels []string, maxBatch int, maxWait
 	}
 	e.gpuDelta = gpuMemUsedMiB() - memBefore
 
-	// Start the pipeline: 1 gatherer -> 1 infer lane -> N unpack workers.
+	// Start the pipeline: 1 gatherer -> N infer lanes -> N unpack workers.
+	// Multiple lanes (Phase 8) run concurrent Run calls on the one shared
+	// session; unpackCh is closed only after the LAST lane exits.
 	e.started = true
 	e.unpackWG.Add(numUnpackers)
 	for i := 0; i < numUnpackers; i++ {
 		go e.unpackLoop()
 	}
-	go e.inferLoop()
+	lanes := numInferLanes
+	if lanes < 1 {
+		lanes = 1
+	}
+	e.inferWG.Add(lanes)
+	for i := 0; i < lanes; i++ {
+		go e.inferLoop()
+	}
+	go func() { e.inferWG.Wait(); close(e.unpackCh) }()
 	go e.collect()
 	go func() { e.unpackWG.Wait(); close(e.doneCh) }()
 	return e, nil
@@ -455,16 +473,19 @@ func (e *Engine) packAndSend(batch []*batchRequest) {
 	e.inferCh <- &packedBatch{inT: inT, raw: raw, batch: batch}
 }
 
-// inferLoop is the single GPU-owning lane: it runs one packed batch at a time and
-// hands the output to the unpack workers. It does NOT split logits or reply — that
-// work runs in parallel downstream so it never stalls the lane. When inferCh is
-// closed (shutdown) it closes unpackCh to unwind the workers.
+// inferLoop is a GPU-owning lane: it runs one packed batch at a time and hands
+// the output to the unpack workers. It does NOT split logits or reply — that
+// work runs in parallel downstream so it never stalls the lane. numInferLanes
+// of these run concurrently against the one shared session (Phase 8); the
+// inferWG waiter in NewEngine closes unpackCh after the last lane exits.
+// With >1 lane the busy/idle stats aggregate across lanes, so busyFrac reads
+// as the AVERAGE per-lane busy fraction.
 func (e *Engine) inferLoop() {
+	defer e.inferWG.Done()
 	for {
 		idleStart := time.Now()
 		pb, ok := <-e.inferCh
 		if !ok {
-			close(e.unpackCh)
 			return
 		}
 		atomic.AddInt64(&e.statIdleNs, int64(time.Since(idleStart)))
