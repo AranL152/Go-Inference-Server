@@ -59,6 +59,9 @@ func main() {
 	cpuDecoders := flag.Int("cpu-decoders", 16, "size of the libjpeg-turbo decoder pool (max concurrent CPU decodes) when -cpu-preprocess is set")
 	maxInflight := flag.Int("max-inflight", 0, "backpressure: max concurrent in-flight requests (0 = unlimited); excess returns HTTP 503")
 	inferLanes := flag.Int("infer-lanes", 1, "concurrent inference lanes on the shared ORT session (Phase 8: >1 overlaps H2D copy with GPU compute)")
+	cudaOptsFlag := flag.String("cuda-opts", "", "extra CUDA execution-provider options as k=v[,k=v...] (Phase 9: ORT tuning keys, e.g. cudnn_conv_algo_search=EXHAUSTIVE)")
+	ioBinding := flag.Bool("io-binding", false, "run FULL batches through pre-bound fixed-shape I/O tensors (ORT IoBinding, Phase 9: skips per-batch tensor create/destroy and output allocation)")
+	deviceBinding := flag.Bool("device-binding", false, "run FULL batches through DEVICE-RESIDENT pre-bound I/O with pinned-host staging (Phase 9 Task 4: engine-owned cudaMalloc buffers, H2D/D2H under engine control; wins over -io-binding)")
 	flag.Parse()
 
 	labels, err := loadLabels(*labelsPath)
@@ -70,6 +73,19 @@ func main() {
 
 	log.Printf("loading model %s onto GPU via CUDA execution provider...", *modelPath)
 	numInferLanes = *inferLanes // must be set before NewEngine spawns the pipeline
+	useIoBinding = *ioBinding
+	useDeviceBinding = *deviceBinding
+	if *cudaOptsFlag != "" {
+		cudaExtraOpts = map[string]string{}
+		for _, kv := range strings.Split(*cudaOptsFlag, ",") {
+			k, v, ok := strings.Cut(kv, "=")
+			if !ok || k == "" {
+				log.Fatalf("FATAL: -cuda-opts entry %q is not k=v", kv)
+			}
+			cudaExtraOpts[k] = v
+		}
+		log.Printf("extra CUDA provider options: %v", cudaExtraOpts)
+	}
 	engine, err := NewEngine(*modelPath, *libPath, labels, *maxBatch, *maxWait)
 	if err != nil {
 		log.Fatalf("FATAL: could not initialize inference engine: %v", err)

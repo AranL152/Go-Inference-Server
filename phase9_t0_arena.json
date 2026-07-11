@@ -1,0 +1,34 @@
+[
+  {
+    "concurrency": 256,
+    "requests": 48000,
+    "errors": 0,
+    "elapsed_sec": 8.989637796,
+    "throughput_req_s": 5339.480976792849,
+    "mean_ms": 47.843,
+    "p50_ms": 47.658,
+    "p95_ms": 58.635,
+    "p99_ms": 64.469,
+    "max_ms": 76.159,
+    "gpu_util_avg_pct": 80.78313253012048,
+    "gpu_util_max_pct": 84,
+    "gpu_mem_max_mib": 2038,
+    "gpu_samples": 83
+  },
+  {
+    "concurrency": 384,
+    "requests": 48000,
+    "errors": 0,
+    "elapsed_sec": 8.985372099,
+    "throughput_req_s": 5342.015830968427,
+    "mean_ms": 71.692,
+    "p50_ms": 71.501,
+    "p95_ms": 84.165,
+    "p99_ms": 90.618,
+    "max_ms": 100.866,
+    "gpu_util_avg_pct": 80.78048780487805,
+    "gpu_util_max_pct": 84,
+    "gpu_mem_max_mib": 2038,
+    "gpu_samples": 82
+  }
+]

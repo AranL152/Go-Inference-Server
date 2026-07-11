@@ -13,3 +13,4 @@
 
 # Local Claude Code settings (machine-specific)
 .claude/settings.local.json
+/onnxruntime.ort118/

@@ -1,0 +1,18 @@
+[
+  {
+    "concurrency": 256,
+    "requests": 48000,
+    "errors": 0,
+    "elapsed_sec": 5.629435669,
+    "throughput_req_s": 8526.609561296684,
+    "mean_ms": 29.855,
+    "p50_ms": 28.111,
+    "p95_ms": 43.911,
+    "p99_ms": 57.225,
+    "max_ms": 73.22,
+    "gpu_util_avg_pct": 83.56818181818181,
+    "gpu_util_max_pct": 90,
+    "gpu_mem_max_mib": 3800,
+    "gpu_samples": 44
+  }
+]

@@ -26,6 +26,7 @@ import (
 	"math"
 	"sync"
 	"sync/atomic"
+	"unsafe"
 	"time"
 
 	ort "github.com/yalue/onnxruntime_go"
@@ -51,6 +52,58 @@ const (
 // compute. Set from the -infer-lanes flag BEFORE NewEngine; default 1 keeps
 // Phase 5-7 behavior exactly.
 var numInferLanes = 1
+
+// cudaExtraOpts holds extra CUDA execution-provider options (Phase 9 Task 0:
+// ORT tuning keys like cudnn_conv_algo_search) merged into the provider
+// config at session creation. Set from the -cuda-opts flag BEFORE NewEngine;
+// nil/empty keeps the exact Phase 5–8 behavior.
+var cudaExtraOpts map[string]string
+
+// useIoBinding switches FULL batches to pre-bound fixed-shape I/O tensors via
+// ORT IoBinding (Phase 9 Task 2): no per-batch NewTensor/Destroy and no
+// ORT-side output allocation per Run. Partial (tail) batches always take the
+// plain Run path, so shapes stay exact and low-load latency is unchanged.
+// Set from the -io-binding flag BEFORE NewEngine; default false = Phase-8
+// behavior.
+var useIoBinding bool
+
+// numBindingSlots is how many pre-bound tensor sets circulate through
+// gather -> infer -> unpack when -io-binding is on. Slots block the gatherer
+// when exhausted (same backpressure style as inferCh); they return to the
+// pool as unpack finishes, so this only needs to cover the pipeline depth.
+const numBindingSlots = 8
+
+// bindingSlot is one reusable pre-bound I/O set: a fixed [maxBatch,C,H,W]
+// input tensor, a fixed [maxBatch,numClass] output tensor, and the IoBinding
+// tying both to the session. inData aliases the input tensor's backing array.
+type bindingSlot struct {
+	in      *ort.Tensor[float32]
+	out     *ort.Tensor[float32]
+	binding *ort.IoBinding
+	inData  []float32
+}
+
+// useDeviceBinding switches FULL batches to DEVICE-RESIDENT pre-bound I/O
+// (Phase 9 Task 4, requires the forked binding + cudamem.go): the engine owns
+// cudaMalloc'd input/output buffers bound once via IoBinding, packs into
+// pinned host staging, and does the H2D/D2H copies itself. ORT then runs
+// entirely against fixed device addresses — no pageable staging copy inside
+// Run and no per-Run output allocation. Set from -device-binding BEFORE
+// NewEngine; wins over -io-binding if both are set.
+var useDeviceBinding bool
+
+// deviceSlot is one reusable device-resident I/O set. stage is pinned host
+// memory (cudaHostAlloc) viewed as []float32; devIn/devOut are device buffers
+// the bound tensors alias. The slot recycles as soon as the lane has copied
+// the logits out (D2H) — unpack never touches slot memory.
+type deviceSlot struct {
+	devIn, devOut unsafe.Pointer
+	stagePtr      unsafe.Pointer
+	stage         []float32 // pinned, len maxBatch*inputElems
+	in, out       *ort.DeviceTensor
+	binding       *ort.IoBinding
+}
+
 
 // ResNet-18 (resnet18-v1-7, GluonCV resnetv15) tensor geometry.
 const (
@@ -95,6 +148,12 @@ type batchRequest struct {
 // 15 MB CPU copy + H2D). The gatherer produces these so the pack cost overlaps
 // the inferrer running the PREVIOUS batch.
 type packedBatch struct {
+	// slot is non-nil when this batch was packed into a pre-bound slot
+	// (-io-binding, full batches only); inT/raw are nil in that case.
+	slot *bindingSlot
+	// dslot is non-nil when packed into a device-resident slot
+	// (-device-binding, full batches only); slot/inT/raw are nil then.
+	dslot *deviceSlot
 	inT   ort.Value
 	raw   []float32       // full-capacity staging buffer backing inT; returned to batchBufPool
 	batch []*batchRequest // ordered; row i of the output belongs to batch[i]
@@ -105,6 +164,10 @@ type packedBatch struct {
 type inferredBatch struct {
 	outT  *ort.Tensor[float32]
 	batch []*batchRequest
+	// logits is set instead of outT on the -device-binding path: the lane
+	// already copied the [n*numClass] logits to this pooled host slice (and
+	// recycled its device slot); unpack returns it to logitsPool.
+	logits []float32
 }
 
 // Engine owns the persistent ORT session and the inference pipeline.
@@ -128,6 +191,19 @@ type Engine struct {
 	labels  []string // ImageNet class names, index-aligned; may be nil
 	inName  string
 	outName string
+
+	// IoBinding slot pool (-io-binding, Phase 9 Task 2). nil when disabled.
+	// slotPool circulates slots gather -> infer -> unpack -> back; slots keeps
+	// them all for Close to destroy after the pipeline drains.
+	slotPool chan *bindingSlot
+	slots    []*bindingSlot
+
+	// Device-resident slot pool (-device-binding, Phase 9 Task 4). nil when
+	// disabled. Slots circulate gather -> infer -> back (the lane copies
+	// logits out before recycling); logitsPool recycles those host copies.
+	devSlotPool chan *deviceSlot
+	devSlots    []*deviceSlot
+	logitsPool  sync.Pool
 
 	// Batching policy (configurable so it can be tuned later).
 	maxBatch int
@@ -284,7 +360,11 @@ func NewEngine(modelPath, libPath string, labels []string, maxBatch int, maxWait
 		e.Close()
 		return nil, fmt.Errorf("create CUDA provider options: %w", err)
 	}
-	if err := e.cudaOpts.Update(map[string]string{"device_id": "0"}); err != nil {
+	cudaOptMap := map[string]string{"device_id": "0"}
+	for k, v := range cudaExtraOpts {
+		cudaOptMap[k] = v
+	}
+	if err := e.cudaOpts.Update(cudaOptMap); err != nil {
 		e.Close()
 		return nil, fmt.Errorf("configure CUDA provider: %w", err)
 	}
@@ -307,6 +387,38 @@ func NewEngine(modelPath, libPath string, labels []string, maxBatch int, maxWait
 		return nil, fmt.Errorf("create inference session: %w", err)
 	}
 	e.gpuDelta = gpuMemUsedMiB() - memBefore
+
+	// Device-resident I/O slots (-device-binding): cudaMalloc'd buffers bound
+	// once; the engine does its own pinned-host H2D/D2H, ORT computes against
+	// fixed device addresses. Wins over -io-binding when both are set.
+	if useDeviceBinding {
+		e.logitsPool.New = func() any { return make([]float32, maxBatch*numClass) }
+		e.devSlotPool = make(chan *deviceSlot, numBindingSlots)
+		for i := 0; i < numBindingSlots; i++ {
+			slot, err := e.newDeviceSlot()
+			if err != nil {
+				e.Close()
+				return nil, fmt.Errorf("create device-binding slot %d: %w", i, err)
+			}
+			e.devSlots = append(e.devSlots, slot)
+			e.devSlotPool <- slot
+		}
+	}
+
+	// Pre-bound I/O slots (-io-binding): fixed-shape tensors bound once, so
+	// full batches skip per-Run tensor creation and ORT output allocation.
+	if useIoBinding && !useDeviceBinding {
+		e.slotPool = make(chan *bindingSlot, numBindingSlots)
+		for i := 0; i < numBindingSlots; i++ {
+			slot, err := e.newBindingSlot()
+			if err != nil {
+				e.Close()
+				return nil, fmt.Errorf("create io-binding slot %d: %w", i, err)
+			}
+			e.slots = append(e.slots, slot)
+			e.slotPool <- slot
+		}
+	}
 
 	// Start the pipeline: 1 gatherer -> N infer lanes -> N unpack workers.
 	// Multiple lanes (Phase 8) run concurrent Run calls on the one shared
@@ -450,12 +562,136 @@ func (e *Engine) collect() {
 	}
 }
 
+// newBindingSlot creates one pre-bound I/O set for the -io-binding path.
+func (e *Engine) newBindingSlot() (*bindingSlot, error) {
+	in, err := ort.NewEmptyTensor[float32](
+		ort.NewShape(int64(e.maxBatch), channels, imageSize, imageSize))
+	if err != nil {
+		return nil, fmt.Errorf("input tensor: %w", err)
+	}
+	out, err := ort.NewEmptyTensor[float32](ort.NewShape(int64(e.maxBatch), numClass))
+	if err != nil {
+		in.Destroy()
+		return nil, fmt.Errorf("output tensor: %w", err)
+	}
+	b, err := e.session.CreateIoBinding()
+	if err != nil {
+		in.Destroy()
+		out.Destroy()
+		return nil, fmt.Errorf("create binding: %w", err)
+	}
+	if err := b.BindInput(e.inName, in); err == nil {
+		err = b.BindOutput(e.outName, out)
+	}
+	if err != nil {
+		b.Destroy()
+		in.Destroy()
+		out.Destroy()
+		return nil, fmt.Errorf("bind I/O: %w", err)
+	}
+	return &bindingSlot{in: in, out: out, binding: b, inData: in.GetData()}, nil
+}
+
+// newDeviceSlot creates one device-resident pre-bound I/O set for the
+// -device-binding path: device input/output buffers, pinned host staging,
+// and an IoBinding tying the device tensors to the session.
+func (e *Engine) newDeviceSlot() (s *deviceSlot, err error) {
+	inBytes := e.maxBatch * inputElems * 4
+	outBytes := e.maxBatch * numClass * 4
+	s = &deviceSlot{}
+	defer func() {
+		if err != nil {
+			e.destroyDeviceSlot(s)
+		}
+	}()
+	if s.devIn, err = cudaMalloc(inBytes); err != nil {
+		return nil, err
+	}
+	if s.devOut, err = cudaMalloc(outBytes); err != nil {
+		return nil, err
+	}
+	if s.stagePtr, err = cudaHostAlloc(inBytes); err != nil {
+		return nil, err
+	}
+	s.stage = unsafe.Slice((*float32)(s.stagePtr), e.maxBatch*inputElems)
+	s.in, err = ort.NewCudaFloat32Tensor(
+		ort.NewShape(int64(e.maxBatch), channels, imageSize, imageSize),
+		s.devIn, uintptr(inBytes), 0)
+	if err != nil {
+		return nil, fmt.Errorf("device input tensor: %w", err)
+	}
+	s.out, err = ort.NewCudaFloat32Tensor(
+		ort.NewShape(int64(e.maxBatch), numClass), s.devOut, uintptr(outBytes), 0)
+	if err != nil {
+		return nil, fmt.Errorf("device output tensor: %w", err)
+	}
+	if s.binding, err = e.session.CreateIoBinding(); err != nil {
+		return nil, fmt.Errorf("create binding: %w", err)
+	}
+	if err = s.binding.BindInput(e.inName, s.in); err == nil {
+		err = s.binding.BindOutput(e.outName, s.out)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("bind device I/O: %w", err)
+	}
+	return s, nil
+}
+
+// destroyDeviceSlot frees a (possibly partially-constructed) device slot:
+// ORT objects first, then the raw buffers they alias.
+func (e *Engine) destroyDeviceSlot(s *deviceSlot) {
+	if s == nil {
+		return
+	}
+	if s.binding != nil {
+		s.binding.Destroy()
+	}
+	if s.in != nil {
+		s.in.Destroy()
+	}
+	if s.out != nil {
+		s.out.Destroy()
+	}
+	if s.stagePtr != nil {
+		cudaFreeHost(s.stagePtr)
+	}
+	if s.devIn != nil {
+		cudaFree(s.devIn)
+	}
+	if s.devOut != nil {
+		cudaFree(s.devOut)
+	}
+}
+
 // packAndSend assembles the batch's input tensor and forwards it to the infer
 // lane. A blocking send provides natural backpressure: if the lane is still busy,
 // the gatherer waits here rather than packing unbounded batches ahead.
 func (e *Engine) packAndSend(batch []*batchRequest) {
 	n := len(batch)
 	if n == 0 {
+		return
+	}
+	if e.devSlotPool != nil && n == e.maxBatch {
+		// Full batch on the -device-binding path: pack into the slot's PINNED
+		// host staging; the lane does the H2D copy itself.
+		slot := <-e.devSlotPool
+		for i, r := range batch {
+			copy(slot.stage[i*inputElems:(i+1)*inputElems], r.input)
+			r.input = nil
+		}
+		e.inferCh <- &packedBatch{dslot: slot, batch: batch}
+		return
+	}
+	if e.slotPool != nil && n == e.maxBatch {
+		// Full batch on the -io-binding path: pack straight into a pre-bound
+		// slot's input tensor. Blocking on the pool is the same backpressure
+		// as the inferCh send below; slots return as unpack workers finish.
+		slot := <-e.slotPool
+		for i, r := range batch {
+			copy(slot.inData[i*inputElems:(i+1)*inputElems], r.input)
+			r.input = nil
+		}
+		e.inferCh <- &packedBatch{slot: slot, batch: batch}
 		return
 	}
 	raw := e.batchBufPool.Get().([]float32)
@@ -506,6 +742,97 @@ func (e *Engine) inferLoop() {
 			log.Printf("batching: %d batches run, avg batch size %.1f (last=%d)", b, avg, n)
 		}
 
+		if pb.dslot != nil {
+			// -device-binding path: pinned H2D into the bound device input,
+			// run against fixed device addresses, D2H the logits to a pooled
+			// host slice, recycle the slot immediately. Device-resident bound
+			// values are used in place by ORT — none of the cached-copy
+			// staleness of CPU-backed bound inputs applies.
+			s := pb.dslot
+			runT := time.Now()
+			runErr := cudaMemcpyH2D(s.devIn, s.stagePtr, n*inputElems*4)
+			if runErr == nil {
+				runErr = e.session.RunWithBinding(s.binding)
+			}
+			var logits []float32
+			if runErr == nil {
+				logits = e.logitsPool.Get().([]float32)
+				runErr = cudaMemcpyD2H(unsafe.Pointer(&logits[0]), s.devOut,
+					n*numClass*4)
+				if runErr != nil {
+					e.logitsPool.Put(logits)
+				}
+			}
+			atomic.AddInt64(&e.statRunNs, int64(time.Since(runT)))
+			e.devSlotPool <- s
+			if runErr != nil {
+				failBatch(pb.batch, fmt.Errorf("inference run (device): %w", runErr))
+				atomic.AddInt64(&e.statBusyNs, int64(time.Since(busyStart)))
+				continue
+			}
+			e.unpackCh <- &inferredBatch{logits: logits, batch: pb.batch}
+			atomic.AddInt64(&e.statRunBatchNs, int64(time.Since(busyStart)))
+			atomic.AddInt64(&e.statBusyNs, int64(time.Since(busyStart)))
+			continue
+		}
+
+		if pb.slot != nil {
+			// -io-binding path: the input tensor is pre-bound and refilled in
+			// place (no per-batch NewTensor/Destroy of a 14 MB pin). The
+			// output must be read back via GetBoundOutputValues — ORT does
+			// NOT reliably write a pre-bound CPU output value on a CUDA
+			// session (measured: 992/1000 garbage answers reading the bound
+			// tensor directly); this is also the binding library's own
+			// documented read pattern.
+			// Re-bind the input every batch: ORT caches the bound input's
+			// device copy across runs (SynchronizeBoundInputs is the C-API
+			// invalidation hook, not exposed by the Go binding), so without
+			// this every Run reuses the FIRST upload (measured: 992/1000
+			// wrong). Rebinding the refilled tensor forces a fresh H2D copy.
+			runT := time.Now()
+			runErr := pb.slot.binding.BindInput(e.inName, pb.slot.in)
+			if runErr == nil {
+				runErr = e.session.RunWithBinding(pb.slot.binding)
+			}
+			atomic.AddInt64(&e.statRunNs, int64(time.Since(runT)))
+			if runErr != nil {
+				e.slotPool <- pb.slot
+				failBatch(pb.batch, fmt.Errorf("inference run (bound): %w", runErr))
+				atomic.AddInt64(&e.statBusyNs, int64(time.Since(busyStart)))
+				continue
+			}
+			outs, gErr := pb.slot.binding.GetBoundOutputValues()
+			if gErr == nil && len(outs) != 1 {
+				gErr = fmt.Errorf("expected 1 bound output, got %d", len(outs))
+			}
+			var outT *ort.Tensor[float32]
+			if gErr == nil {
+				var castOK bool
+				outT, castOK = outs[0].(*ort.Tensor[float32])
+				if !castOK {
+					gErr = fmt.Errorf("unexpected bound output type %T", outs[0])
+				}
+			}
+			if gErr != nil {
+				for _, v := range outs {
+					if v != nil {
+						v.Destroy()
+					}
+				}
+				e.slotPool <- pb.slot
+				failBatch(pb.batch, fmt.Errorf("read bound output: %w", gErr))
+				atomic.AddInt64(&e.statBusyNs, int64(time.Since(busyStart)))
+				continue
+			}
+			// The retrieved value is a fresh OrtValue owned by us; the slot
+			// (input + binding) can recycle immediately.
+			e.slotPool <- pb.slot
+			e.unpackCh <- &inferredBatch{outT: outT, batch: pb.batch}
+			atomic.AddInt64(&e.statRunBatchNs, int64(time.Since(busyStart)))
+			atomic.AddInt64(&e.statBusyNs, int64(time.Since(busyStart)))
+			continue
+		}
+
 		// nil output -> ORT allocates the correctly-shaped [N,1000] output.
 		outputs := []ort.Value{nil}
 		runT := time.Now()
@@ -541,9 +868,20 @@ func (e *Engine) inferLoop() {
 func (e *Engine) unpackLoop() {
 	defer e.unpackWG.Done()
 	for ib := range e.unpackCh {
-		logits := ib.outT.GetData() // length n*numClass, row-major [N,1000]
+		var logits []float32
+		if ib.logits != nil {
+			// -device-binding: lane-copied host logits; pooled slice is
+			// [maxBatch*numClass], slice to the (always-full) batch.
+			logits = ib.logits[:len(ib.batch)*numClass]
+		} else {
+			logits = ib.outT.GetData() // length n*numClass, row-major [N,1000]
+		}
 		preds, err := splitBatchLogits(logits, len(ib.batch), e.labels)
-		ib.outT.Destroy()
+		if ib.logits != nil {
+			e.logitsPool.Put(ib.logits)
+		} else {
+			ib.outT.Destroy()
+		}
 		if err != nil {
 			failBatch(ib.batch, err)
 			continue
@@ -628,6 +966,19 @@ func (e *Engine) Close() {
 		case <-time.After(5 * time.Second):
 		}
 	}
+
+	// Slots are only touched by pipeline goroutines, which have all exited by
+	// here (doneCh) — safe to destroy the bindings and their tensors.
+	for _, s := range e.slots {
+		s.binding.Destroy()
+		s.in.Destroy()
+		s.out.Destroy()
+	}
+	e.slots = nil
+	for _, s := range e.devSlots {
+		e.destroyDeviceSlot(s)
+	}
+	e.devSlots = nil
 
 	if e.session != nil {
 		e.session.Destroy()

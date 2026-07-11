@@ -60,5 +60,26 @@ Go binding to a matching tag (binding API version must be ≤ the ORT version).
 - `main.go`   — the ~30-line validation (commented).
 - `run.sh`    — sets `PATH` + `LD_LIBRARY_PATH`, builds, runs.
 - `resnet18.onnx` — ResNet-18 v1-7 (ONNX model zoo).
-- `onnxruntime/`  — extracted ORT 1.18.1 cuda12 native libraries.
+- `onnxruntime/`  — extracted ORT native libraries (see Phase 9 update below).
 - `cudnn9/`        — cuDNN 9 libraries the CUDA EP loads at runtime.
+
+## Phase 9 update (2026-07-11): foundation upgraded
+
+The Phase-0 pins above were deliberately retired in Phase 9 to unlock
+IoBinding (see `PHASE9_SPEC.md`). Current foundation:
+
+| Component   | Version | Source |
+|-------------|---------|--------|
+| ONNX Runtime| **1.27.1** (cuda12 build) | `onnxruntime-linux-x64-gpu_cuda12-1.27.1.tgz` from microsoft/onnxruntime GitHub releases, extracted to `onnxruntime/` |
+| Go binding  | **v1.31.0** (ORT API 26) | `go.mod` |
+| cuDNN       | 9.10.2 (unchanged) | `cudnn9/` — verified compatible via ldd |
+
+- The upgrade needed ZERO Go code changes (v1.11.0 API surface survived).
+- Correctness identical on both models and all three content types.
+- **Known, accepted cost:** raw fp32 inference is ~20% slower per Run
+  (6.8 → 8.2 ms/batch-32) on EVERY IoBinding-capable ORT (1.22/1.26/1.27
+  all measured identical) — not fixable by `cudnn_conv_algo_search`,
+  `use_tf32`, or cuDNN 9.24. FP16 throughput is unaffected. If you need the
+  old fp32 speed, pin ORT 1.18.1 + binding v1.11.0 (commit history has the
+  matched set; `onnxruntime.ort118/` is the local rollback dir until Phase 9
+  lands).
