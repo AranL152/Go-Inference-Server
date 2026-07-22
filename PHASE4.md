@@ -107,8 +107,8 @@ than CPU for the small image. The pool erases it.
 ## End-to-end throughput — before/after (same machine, same load tool)
 
 CPU path is the default build; GPU path is `-gpu-preprocess -gpu-decoders 8`.
-`./loadtest/loadtest` (closed-loop). Raw: `phase4_cpu_results.*`,
-`phase4_gpu_results.*`.
+`./loadtest/loadtest` (closed-loop). Raw: `results/phase4_cpu_results.*`,
+`results/phase4_gpu_results.*`.
 
 | Concurrency | CPU req/s | GPU req/s | Speedup |
 |------------:|----------:|----------:|--------:|
@@ -204,7 +204,7 @@ inference on separate CUDA streams, and/or run multiple inference lanes. Tuning
 - `preprocess.go` — split into `resizeForModel` / `normalizeCHW` for stage benchmarks.
 - `preprocess_bench_test.go` — per-stage decode/resize/normalize benchmarks.
 - `main.go` — `-gpu-preprocess`, `-gpu-decoders` flags; CPU fallback retained.
-- `phase4_cpu_results.*` / `phase4_gpu_results.*` — raw before/after load numbers.
+- `results/phase4_cpu_results.*` / `results/phase4_gpu_results.*` — raw before/after load numbers.
 - `PHASE4_SPEC.md` — the spec this phase executed.
 
 ## Reproduce
@@ -215,7 +215,7 @@ inference on separate CUDA streams, and/or run multiple inference lanes. Tuning
 ./run.sh &                                            # CPU baseline server (default)
 
 CGO_ENABLED=0 ~/sdk/go/bin/go build -o loadtest/loadtest ./loadtest
-./loadtest/loadtest -levels 4,16,32,64,128,256 -n 8000 -warmup 300 -out phase4_gpu_results
+./loadtest/loadtest -levels 4,16,32,64,128,256 -n 8000 -warmup 300 -out results/phase4_gpu_results
 
 # Correctness + per-image cost (sets the ORT/CUDA lib paths):
 ./test_phase3.sh -run 'TestGPU|TestNvjpeg'

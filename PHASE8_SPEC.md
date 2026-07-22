@@ -20,7 +20,7 @@ Huffman-bound libjpeg-turbo, GPU ~62% idle. Phase-8 groundwork (measured
   JPEG baseline ~2,200 req/s (GPU 38%); raw closed-loop **4,660–4,962** req/s
   (batches full at 31.8/32, 0 errors); open-loop saturation **~4,900** (offered
   6,000 → achieved 4,882 with p50 9.8→274 ms blowup). GPU util 67–75%,
-  server CPU ~2.8/16 cores. Results: `phase8_raw_results.*`, `phase8_jpeg_baseline.*`.
+  server CPU ~2.8/16 cores. Results: `results/phase8_raw_results.*`, `results/phase8_jpeg_baseline.*`.
 
 ## The contract decision (this phase's premise)
 
@@ -144,7 +144,7 @@ server does normalize-into-pooled-tensor (vectorizable, ~0.3 ms). Loadtest
 - `loadtest/` — Task 4 `-raw-rgb` if reached.
 - New: `resnet18_fp16.onnx` (Task 3), `PHASE8.md`, this spec.
 - Already in tree from groundwork: raw path in `main.go`, `loadtest/raw.go`,
-  `phase8_raw_results.*`, `phase8_jpeg_baseline.*`.
+  `results/phase8_raw_results.*`, `results/phase8_jpeg_baseline.*`.
 
 ## Verification
 - Warm pass before every measured sweep; `/stats?reset=1` between levels/runs.

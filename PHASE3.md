@@ -63,7 +63,7 @@ All pass. Batching does not corrupt or mix up results.
 
 `./loadtest/loadtest -levels 1,4,16,64,128 -n 1500 -warmup 50` against the batched
 server (`resnet18.onnx`, CUDA EP, RTX 4080, 16 vCPU; default `-max-batch 32
--max-wait 5ms`). Raw: `phase3_results.csv` / `phase3_results.json`.
+-max-wait 5ms`). Raw: `results/phase3_results.csv` / `results/phase3_results.json`.
 
 | Concurrency | Throughput (req/s) | p50 (ms) | p95 (ms) | p99 (ms) | mean (ms) | max (ms) | GPU util avg | GPU util max |
 |------------:|-------------------:|---------:|---------:|---------:|----------:|---------:|-------------:|-------------:|
@@ -163,14 +163,14 @@ demonstrates here.
 - `engine_throughput_test.go` — engine-isolation throughput (the ~12× headroom proof).
 - `preprocess_bench_test.go` — preprocessing cost benchmark (the bottleneck proof).
 - `test_phase3.sh` — runs all of the above with the correct lib paths.
-- `phase3_results.csv` / `phase3_results.json` — raw load-test numbers.
+- `results/phase3_results.csv` / `results/phase3_results.json` — raw load-test numbers.
 
 ## Reproduce
 
 ```bash
 ./run.sh -max-batch 32 -max-wait 5ms &          # start the batched server on :8080
 CGO_ENABLED=0 ~/sdk/go/bin/go build -o loadtest/loadtest ./loadtest
-./loadtest/loadtest -levels 1,4,16,64,128 -n 1500 -warmup 50 -out phase3_results
+./loadtest/loadtest -levels 1,4,16,64,128 -n 1500 -warmup 50 -out results/phase3_results
 ./test_phase3.sh                                 # correctness + isolation evidence
 ./test_phase3.sh -run BenchmarkPreprocess -bench . -benchtime 3s
 ```

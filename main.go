@@ -146,9 +146,10 @@ func main() {
 
 	srv := &server{engine: engine, quiet: *quiet, gpuPool: gpuPool, cpuPool: cpuPool, hybrid: hybrid}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/predict", srv.handlePredict)
+	mux.HandleFunc("/predict", instrument(&predictMetrics, srv.handlePredict))
 	mux.HandleFunc("/health", srv.handleHealth)
 	mux.HandleFunc("/stats", srv.handleStats)
+	mux.HandleFunc("/metrics", srv.handleMetrics)
 	// Profiling (Phase 7): net/http/pprof registers on the default mux; expose it
 	// through ours so `go tool pprof http://.../debug/pprof/{profile,allocs}` works.
 	mux.Handle("/debug/pprof/", http.DefaultServeMux)
@@ -166,7 +167,7 @@ func main() {
 		_ = httpSrv.Shutdown(ctx)
 	}()
 
-	log.Printf("listening on %s  (POST /predict, GET /health)", *addr)
+	log.Printf("listening on %s  (POST /predict, GET /health, GET /stats, GET /metrics)", *addr)
 	if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("FATAL: server error: %v", err)
 	}

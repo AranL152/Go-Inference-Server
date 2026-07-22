@@ -42,7 +42,7 @@ so at 128 (cuDNN picks slower kernels / larger workspaces at higher batch):
 | 64        | 4,574           | 16.4             | 62.4      | 0.26     |
 | 128       | 1,749           | 78.1             | 72.5      | 1.08     |
 
-(Files: `phase8_t1_b32/b64/b128.*`. Short-protocol runs, but the losses are
+(Files: `results/phase8_t1_b32/b64/b128.*`. Short-protocol runs, but the losses are
 far outside noise.) Batch 32 kept for everything below.
 
 ## Task 2 — concurrent infer lanes (`-infer-lanes`, one shared session): kept
@@ -62,7 +62,7 @@ pack/split and implicit H2D copy with lane B's GPU compute still nets +31%:
 | 5                      | 5,721 (short proto)  | 31.3             |
 | 6                      | 5,468 (short proto)  | 32.6             |
 
-(Files: `phase8_t2_lanes*_long*.*`.) GPU util rises 67% → ~86–91% at 3 lanes.
+(Files: `results/phase8_t2_lanes*_long*.*`.) GPU util rises 67% → ~86–91% at 3 lanes.
 Default stays 1 (exact Phase 5–7 behavior); flag is opt-in.
 `TestPipelineRoutingStressMultiLane` proves 1,000 interleaved dog/cat requests
 across 2 lanes route with 0 swaps. With >1 lane, `/stats` busy/idle aggregates
@@ -84,12 +84,12 @@ model with "Tensor element type mismatch. 10 != 1".
 - At 3 lanes FP16 is throughput-neutral (~6,200): compute got cheaper (GPU
   util dropped 86%→79% at the same req/s) but the wall was elsewhere.
 - The cheaper Runs shift the lane knee to 4: **7,633 peak, 7,467–7,559 on
-  repeat** (`phase8_t3_fp16_lanes4*.*`). 5 lanes regresses (5,798).
+  repeat** (`results/phase8_t3_fp16_lanes4*.*`). 5 lanes regresses (5,798).
 
 ## Task 4 — uint8-RGB raw variant: built, measured
 
 `application/x-raw-rgb` + loadtest `-raw-rgb`. On the best config (FP16, 4
-lanes): **5,767 req/s** sustained (`phase8_t4_rawrgb_long.*`) — ~23% below the
+lanes): **5,767 req/s** sustained (`results/phase8_t4_rawrgb_long.*`) — ~23% below the
 raw-tensor path (the per-request normalize costs ~1.7 cores at this rate and
 competes with the pack loop), but still 2.5× the JPEG path with 4× less
 network than raw tensors. Correctness: Samoyed 0.9092 / Egyptian cat 0.6865.

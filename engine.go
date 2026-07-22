@@ -299,6 +299,22 @@ func (e *Engine) BatchStats() (batches, reqs int64, avg float64) {
 	return
 }
 
+// CumulativeStats returns the raw monotonic counters behind TimingStats and
+// BatchStats. The Prometheus endpoint (metrics.go) needs the cumulative sums,
+// not averages: Prometheus computes rates and ratios from counters itself.
+// Note ResetStats (via /stats?reset=1) zeroes these; Prometheus rate() treats
+// that as an ordinary counter reset.
+func (e *Engine) CumulativeStats() (batches, reqs, rejects, waitNs, runNs, runBatchNs, busyNs, idleNs int64) {
+	return atomic.LoadInt64(&e.statBatches),
+		atomic.LoadInt64(&e.statReqs),
+		atomic.LoadInt64(&e.statRejects),
+		atomic.LoadInt64(&e.statWaitNs),
+		atomic.LoadInt64(&e.statRunNs),
+		atomic.LoadInt64(&e.statRunBatchNs),
+		atomic.LoadInt64(&e.statBusyNs),
+		atomic.LoadInt64(&e.statIdleNs)
+}
+
 // ensureORT initializes the process-global ONNX Runtime environment exactly once.
 // ORT does not support repeated Initialize/Destroy cycles in a single process, so
 // every engine shares one environment for the process lifetime.

@@ -20,7 +20,7 @@ bottleneck before Phase 3 fixes it.
 - **Workload:** `testdata/dog.jpg` and `testdata/cat.jpg`, cycled round-robin.
 - **Per level:** 50 warmup requests (discarded) + 1500 measured requests.
 - **Run:** `./loadtest/loadtest -levels 1,2,4,8,16,32,64,128 -n 1500 -warmup 50`
-- Raw data: **`phase2_results.csv`** / **`phase2_results.json`** (committed alongside this file).
+- Raw data: **`results/phase2_results.csv`** / **`results/phase2_results.json`** (committed alongside this file).
 
 ## Results
 
@@ -107,12 +107,12 @@ compute idle ≈ 62% of the time even at concurrency 64.*
 
 - `loadtest/main.go` — the load generator + GPU sampler.
 - `loadtest/loadtest` — built binary (`CGO_ENABLED=0 go build -o loadtest/loadtest ./loadtest`).
-- `phase2_results.csv`, `phase2_results.json` — raw per-level numbers (the dataset Phase 4 compares against).
+- `results/phase2_results.csv`, `results/phase2_results.json` — raw per-level numbers (the dataset Phase 4 compares against).
 
 ## Reproduce
 
 ```bash
 ./run.sh &                 # start the unmodified Phase 1 server on :8080
 CGO_ENABLED=0 ~/sdk/go/bin/go build -o loadtest/loadtest ./loadtest
-./loadtest/loadtest -levels 1,2,4,8,16,32,64,128 -n 1500 -warmup 50 -out phase2_results
+./loadtest/loadtest -levels 1,2,4,8,16,32,64,128 -n 1500 -warmup 50 -out results/phase2_results
 ```

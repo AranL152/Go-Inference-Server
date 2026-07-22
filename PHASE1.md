@@ -97,7 +97,7 @@ Phase 0's flat-0.5 dummy input is replaced by this real pipeline
 - `run.sh`         — same PATH/LD_LIBRARY_PATH as Phase 0; builds `./server`.
 - `test.sh`        — end-to-end smoke test.
 - `testdata/`      — `dog.jpg`, `cat.jpg` sample images with known answers.
-- `phase0_main.go.bak` — the original Phase 0 one-shot, preserved (not compiled).
+- Phase 0's original one-shot `main.go` was preserved as `phase0_main.go.bak` until the Phase-9 repo cleanup; it lives in git history (commit 8b03b7f).
 
 ## Deliberately NOT in Phase 1
 
