@@ -5,13 +5,13 @@ import (
 	"testing"
 )
 
-// TestScaledDecodeGate is the Phase 6 Task 2 GATE. It decodes one real image at
-// scale NONE / 1/2 / 1/4 / 1/8 (decode-only, sync each) and prints ms/decode.
+// TestScaledDecodeGate decodes one real image at scale NONE / 1/2 / 1/4 / 1/8
+// (decode only, synced each time) and prints ms/decode.
 //
-// Decision rule (we need ~256px out of ~1546px, so 1/4 is plenty):
-//   - 1/4 materially faster than NONE  -> scaled GPU decode works; build into pool.
-//   - 1/4 ≈ NONE                       -> decode is Huffman-bound; GPU scaling
-//                                          won't help; pivot lever #1.
+// Only ~256px of a ~1546px source is needed, so 1/4 is plenty:
+//   - 1/4 materially faster than NONE: scaled GPU decode is worth pooling.
+//   - 1/4 about equal to NONE: decode is Huffman-bound and GPU scaling cannot
+//     help.
 //
 // Standalone (creates its own nvJPEG objects). Run with ORT_PROBE=1.
 func TestScaledDecodeGate(t *testing.T) {

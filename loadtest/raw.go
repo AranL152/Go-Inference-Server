@@ -1,15 +1,14 @@
-// Raw-tensor mode (decode-free ceiling probe).
+// Client-side preprocessing for the raw request modes.
 //
-// With -raw, the loadtest preprocesses each test image ONCE at startup — the
-// same recipe as the server's pure-Go path (shorter side to 256 via bilinear
-// half-pixel resize, center-crop 224, /255 + ImageNet mean/std, NCHW) — and
-// sends the resulting float32 tensor bytes with Content-Type
-// application/x-raw-tensor. The server skips decode entirely, so the measured
-// throughput is the HTTP + batching + inference ceiling.
+// With -raw (or -raw-rgb) the loadtest preprocesses each test image once at
+// startup, using the same recipe as the server (shorter side to 256 via
+// bilinear half-pixel resize, center-crop 224, and for -raw also /255 plus
+// ImageNet mean/std into NCHW), then sends those bytes on every request. The
+// server then measures HTTP + batching + inference without decode.
 //
-// The preprocessing here is intentionally a copy of the server's preprocess.go:
-// this tool must not import the server (both are package main), and the copy
-// runs once per image at startup, so its speed is irrelevant.
+// The preprocessing is a copy of the server's preprocess.go: this tool cannot
+// import the server (both are package main), and the copy runs once per image
+// at startup, so its speed does not matter.
 package main
 
 import (

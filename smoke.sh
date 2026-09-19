@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# End-to-end smoke test for the Phase 1 inference server.
+# End-to-end smoke test for the inference server.
 # Assumes the server is already running (e.g. `./run.sh` in another terminal).
 # Usage: ./test.sh [host:port]
 set -e

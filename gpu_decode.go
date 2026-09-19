@@ -1,18 +1,14 @@
-// GPU JPEG decode via nvJPEG (Phase 4, Task 1 — standalone gate).
+// GPU JPEG decode and resize via nvJPEG + NPP.
 //
-// This is the first, deliberately isolated step of moving image preprocessing
-// onto the GPU. It does ONE thing: decode a JPEG to interleaved RGB on the GPU
-// using nvJPEG and copy the pixels back to host memory. It does not touch the
-// server, the engine, or the batching collector. The point is to prove that:
+// The entry points here decode a JPEG on the GPU, optionally resize and
+// center-crop it there, and copy the result back to host memory. A pool of
+// reusable decoder contexts (handle, state, CUDA stream, device buffers) sits
+// at the bottom of the file and is what the server actually uses with
+// -gpu-preprocess.
 //
-//  1. nvJPEG + cudart link cleanly against the protected Phase-0 ORT/cuDNN/CUDA
-//     stack (CUDA 12.6), and
-//  2. GPU-decoded pixels match Go's image/jpeg decode within tolerance, and
-//  3. which nvJPEG backend this card actually provides — the dedicated hardware
-//     NVJPG engine (decode on separate silicon, no contention with inference) or
-//     the GPU-hybrid path (CUDA cores, shares SMs with inference).
-//
-// Resize/crop/normalize and the decoder pool come in later tasks.
+// Which nvJPEG backend a card provides matters: the dedicated NVJPG engine
+// decodes on separate silicon and does not contend with inference, while the
+// GPU-hybrid path runs on CUDA cores and shares SMs with it.
 package main
 
 /*
@@ -320,8 +316,8 @@ func (b nvjpegBackend) String() string {
 }
 
 // gpuBackendAvailable reports whether nvJPEG can create a handle for the given
-// backend on this GPU. The key question for Phase 4 is whether backendHardware
-// is available (dedicated decode silicon) or we fall back to GPU_HYBRID.
+// backend on this GPU. What matters is whether backendHardware is available
+// (dedicated decode silicon) or the card falls back to GPU_HYBRID.
 func gpuBackendAvailable(b nvjpegBackend) (bool, int) {
 	rc := int(C.gpu_try_backend(C.int(b)))
 	return rc == 0, rc
@@ -442,8 +438,8 @@ func (p *gpuDecoderPool) Preprocess(jpeg []byte) ([]float32, error) {
 }
 
 // preprocessWith runs decode+normalize on an already-checked-out context and
-// returns it to the pool. Split from Preprocess so the hybrid router (Phase 7)
-// can select a free decoder across multiple pools before committing to one.
+// returns it to the pool. Split from Preprocess so the hybrid router can pick a
+// free decoder across pools before committing to one.
 func (p *gpuDecoderPool) preprocessWith(d *gpuDecoder, jpeg []byte) ([]float32, error) {
 	defer func() { p.free <- d }()
 	if len(jpeg) == 0 {

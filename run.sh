@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Build and run the Phase 1 GPU inference HTTP server.
-# (Same PATH + LD_LIBRARY_PATH setup as Phase 0 — do not change the lib paths.)
+# Build and run the GPU inference HTTP server.
+# The LD_LIBRARY_PATH order below is load-bearing; see the note under it.
 set -e
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Go toolchain (installed to ~/sdk/go in Phase 0 setup).
+# Go toolchain (installed to ~/sdk/go, no sudo needed).
 export PATH="$HOME/sdk/go/bin:$HOME/go/bin:$PATH"
 
 # Runtime library search path. Order matters:

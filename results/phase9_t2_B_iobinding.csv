@@ -1,3 +1,0 @@
-concurrency,throughput_req_s,p50_ms,p95_ms,p99_ms,mean_ms,max_ms,gpu_util_avg_pct,gpu_util_max_pct,gpu_mem_max_mib,gpu_samples,errors,elapsed_sec
-256,6270.16,40.59,48.20,59.17,40.77,100.33,66.3,70.0,4646,63,0,7.655
-384,6195.16,61.65,70.74,77.88,61.78,125.76,65.7,69.0,4654,64,0,7.748

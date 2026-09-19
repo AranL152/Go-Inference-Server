@@ -1,7 +1,7 @@
-// Thin cgo wrappers over the CUDA runtime for the -device-binding path
-// (Phase 9 Task 4): the engine owns device-resident I/O buffers and pinned
-// host staging, so ORT's IoBinding uses our buffers in place and the H2D copy
-// happens from page-locked memory under our control instead of inside Run.
+// Thin cgo wrappers over the CUDA runtime for the -device-binding path: the
+// engine owns device-resident I/O buffers and pinned host staging, so ORT's
+// IoBinding uses those buffers in place and the H2D copy happens from
+// page-locked memory under engine control instead of inside Run.
 //
 // Links libcudart from the same CUDA 12.6 install run.sh already requires.
 package main

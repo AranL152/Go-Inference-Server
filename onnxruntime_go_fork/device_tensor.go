@@ -1,10 +1,10 @@
-// Phase-9 fork addition (go-inference-server): float32 tensors backed by
-// EXTERNALLY-MANAGED CUDA device memory. The stock library only creates
+// Fork addition for go-inference-server: float32 tensors backed by
+// externally managed CUDA device memory. The stock library only creates
 // CPU-backed values, which forces ORT to stage every IoBinding input through
-// a cached device copy (and to allocate outputs itself). A DeviceTensor lets
-// the caller own the device buffers — the caller is responsible for
-// allocating them (e.g. cudaMalloc), copying data in/out, and freeing them
-// AFTER the tensor is destroyed.
+// a cached device copy and to allocate outputs itself. A DeviceTensor lets the
+// caller own the device buffers instead: allocating them (with cudaMalloc, for
+// example), copying data in and out, and freeing them after the tensor is
+// destroyed.
 package onnxruntime_go
 
 // #include "onnxruntime_wrapper.h"
@@ -22,10 +22,10 @@ var cudaMemoryInfos = map[int]*C.OrtMemoryInfo{}
 
 // DeviceTensor is a float32 tensor whose data lives in CUDA device memory
 // owned by the CALLER. It satisfies the Value interface so it can be bound
-// via IoBinding.BindInput/BindOutput; because the memory is already on the
-// session's device, ORT uses the buffer in place — no cached-copy staleness
-// (the stock CPU-value + IoBinding path reuses the FIRST upload forever) and
-// no ORT-side output allocation.
+// via IoBinding.BindInput/BindOutput. Because the memory is already on the
+// session's device, ORT uses the buffer in place: no cached-copy staleness
+// (the stock CPU-value plus IoBinding path reuses the first upload forever)
+// and no ORT-side output allocation.
 type DeviceTensor struct {
 	shape    Shape
 	ortValue *C.OrtValue

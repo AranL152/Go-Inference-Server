@@ -1,13 +1,16 @@
-// Phase 1 — single-request GPU inference HTTP server.
+// HTTP front end for the ResNet-18 inference server.
 //
-// A long-running server that loads ResNet-18 onto the GPU once at startup
-// (ONNX Runtime CUDA execution provider, validated in Phase 0) and serves:
+// The model is loaded onto the GPU once at startup (ONNX Runtime, CUDA
+// execution provider) and reused for every request:
 //
-//	POST /predict  — body is a JPEG/PNG image; returns top-1 ImageNet class as JSON
-//	GET  /health   — 200 if the model session is loaded
+//	POST /predict  JPEG/PNG image, pre-decoded RGB, or a preprocessed tensor;
+//	               returns the top-1 ImageNet class as JSON
+//	GET  /health   200 if the model session is loaded
+//	GET  /stats    per-stage timing averages
+//	GET  /metrics  Prometheus exposition
 //
-// Phase 1 is deliberately one-request-at-a-time (the Engine serializes Run()).
-// Concurrency, batching, and production hardening come in later phases.
+// This file handles HTTP, request-body decoding and observability; batching and
+// inference live in engine.go.
 package main
 
 import (
@@ -21,7 +24,7 @@ import (
 	"io"
 	"log"
 	"net/http"
-	_ "net/http/pprof" // registers /debug/pprof/* on http.DefaultServeMux (Phase 7 diagnostics)
+	_ "net/http/pprof" // registers /debug/pprof/* on http.DefaultServeMux
 	"os"
 	"os/signal"
 	"runtime"
@@ -35,14 +38,14 @@ import (
 const maxImageBytes = 20 << 20 // 20 MiB request-body cap
 
 // rawTensorContentType marks a /predict body that is already the preprocessed
-// NCHW float32 tensor (native byte order, length inputElems*4). It exists to
-// measure the server's decode-free ceiling: HTTP + batching + inference only.
+// NCHW float32 tensor (native byte order, length inputElems*4), so the server
+// does HTTP + batching + inference and nothing else.
 const rawTensorContentType = "application/x-raw-tensor"
 
 // rawRGBContentType marks a /predict body that is a decoded, resized,
-// center-cropped 224×224 image as interleaved RGB uint8 (150,528 bytes) —
-// the network-realistic raw contract (Phase 8 Task 4): 4x smaller bodies than
-// x-raw-tensor, with the server doing only the normalize-into-NCHW step.
+// center-cropped 224x224 image as interleaved RGB uint8 (150,528 bytes).
+// Bodies are 4x smaller than x-raw-tensor and the server only has to
+// normalize them into NCHW.
 const rawRGBContentType = "application/x-raw-rgb"
 
 func main() {
@@ -53,15 +56,15 @@ func main() {
 	maxBatch := flag.Int("max-batch", 32, "dynamic batching: max requests per inference batch")
 	maxWait := flag.Duration("max-wait", 5*time.Millisecond, "dynamic batching: max time to wait assembling a batch before running it")
 	quiet := flag.Bool("quiet", false, "suppress per-request prediction logging (avoids log contention under load)")
-	gpuPreprocess := flag.Bool("gpu-preprocess", false, "decode+resize images on the GPU via nvJPEG+NPP instead of on the CPU (Phase 4)")
+	gpuPreprocess := flag.Bool("gpu-preprocess", false, "decode+resize images on the GPU via nvJPEG+NPP instead of on the CPU")
 	gpuDecoders := flag.Int("gpu-decoders", 8, "size of the GPU decoder-context pool (max concurrent GPU decodes) when -gpu-preprocess is set")
-	cpuPreprocess := flag.Bool("cpu-preprocess", false, "decode images on the CPU via libjpeg-turbo (SIMD, 1/4 DCT scale) instead of Go's pure-Go image/jpeg, keeping decode off the GPU (Phase 6)")
+	cpuPreprocess := flag.Bool("cpu-preprocess", false, "decode images on the CPU via libjpeg-turbo (SIMD, DCT prescale) instead of Go's pure-Go image/jpeg, keeping decode off the GPU")
 	cpuDecoders := flag.Int("cpu-decoders", 16, "size of the libjpeg-turbo decoder pool (max concurrent CPU decodes) when -cpu-preprocess is set")
 	maxInflight := flag.Int("max-inflight", 0, "backpressure: max concurrent in-flight requests (0 = unlimited); excess returns HTTP 503")
-	inferLanes := flag.Int("infer-lanes", 1, "concurrent inference lanes on the shared ORT session (Phase 8: >1 overlaps H2D copy with GPU compute)")
-	cudaOptsFlag := flag.String("cuda-opts", "", "extra CUDA execution-provider options as k=v[,k=v...] (Phase 9: ORT tuning keys, e.g. cudnn_conv_algo_search=EXHAUSTIVE)")
-	ioBinding := flag.Bool("io-binding", false, "run FULL batches through pre-bound fixed-shape I/O tensors (ORT IoBinding, Phase 9: skips per-batch tensor create/destroy and output allocation)")
-	deviceBinding := flag.Bool("device-binding", false, "run FULL batches through DEVICE-RESIDENT pre-bound I/O with pinned-host staging (Phase 9 Task 4: engine-owned cudaMalloc buffers, H2D/D2H under engine control; wins over -io-binding)")
+	inferLanes := flag.Int("infer-lanes", 1, "concurrent inference lanes on the shared ORT session; >1 overlaps the H2D copy with GPU compute")
+	cudaOptsFlag := flag.String("cuda-opts", "", "extra CUDA execution-provider options as k=v[,k=v...], e.g. cudnn_conv_algo_search=EXHAUSTIVE")
+	ioBinding := flag.Bool("io-binding", false, "run full batches through pre-bound fixed-shape I/O tensors (ORT IoBinding): skips per-batch tensor create/destroy and output allocation")
+	deviceBinding := flag.Bool("device-binding", false, "run full batches through device-resident pre-bound I/O with pinned-host staging: engine-owned cudaMalloc buffers, H2D/D2H under engine control; takes precedence over -io-binding")
 	flag.Parse()
 
 	labels, err := loadLabels(*labelsPath)
@@ -94,8 +97,9 @@ func main() {
 	engine.SetMaxInflight(*maxInflight)
 	log.Printf("dynamic batching enabled: max-batch=%d, max-wait=%s, max-inflight=%d, infer-lanes=%d", *maxBatch, *maxWait, *maxInflight, *inferLanes)
 
-	// Prove GPU placement the same way Phase 0 did: session creation must have
-	// allocated GPU memory. ORT silently falls back to CPU otherwise.
+	// Session creation is where ORT copies the weights onto the card, so a
+	// GPU memory delta is the proof of placement: ORT falls back to CPU
+	// silently if the CUDA provider fails to load.
 	if engine.OnGPU() {
 		log.Printf("=== model loaded on GPU (allocated %+d MiB; compute-app PID listed: %v) ===",
 			engine.GPUDeltaMiB(), processOnGPU())
@@ -104,15 +108,15 @@ func main() {
 			engine.GPUDeltaMiB())
 	}
 
-	// Optional GPU preprocessing path (Phase 4). When enabled, JPEG decode +
-	// resize run on the GPU (nvJPEG + NPP) instead of saturating the CPU, which
-	// the Phase 3/4 investigation identified as the real throughput ceiling.
+	// Decoder selection. JPEG decode is the dominant per-request CPU cost, so
+	// it can run on libjpeg-turbo, on the GPU (nvJPEG + NPP), or split across
+	// both with the GPU taking overflow only.
 	var gpuPool *gpuDecoderPool
 	var cpuPool *cpuDecoderPool
 	var hybrid *hybridPreprocessor
 	switch {
 	case *gpuPreprocess && *cpuPreprocess:
-		// Hybrid (Phase 7): CPU decodes while it has slack; GPU is overflow-only.
+		// CPU decodes while it has slack; the GPU is overflow capacity only.
 		cpuPool, err = newCPUDecoderPool(*cpuDecoders)
 		if err != nil {
 			log.Fatalf("FATAL: could not initialize CPU decoder pool: %v", err)
@@ -150,8 +154,8 @@ func main() {
 	mux.HandleFunc("/health", srv.handleHealth)
 	mux.HandleFunc("/stats", srv.handleStats)
 	mux.HandleFunc("/metrics", srv.handleMetrics)
-	// Profiling (Phase 7): net/http/pprof registers on the default mux; expose it
-	// through ours so `go tool pprof http://.../debug/pprof/{profile,allocs}` works.
+	// net/http/pprof registers on the default mux; expose it through ours so
+	// `go tool pprof http://.../debug/pprof/{profile,allocs}` works.
 	mux.Handle("/debug/pprof/", http.DefaultServeMux)
 
 	httpSrv := &http.Server{Addr: *addr, Handler: mux}
@@ -179,7 +183,7 @@ type server struct {
 	quiet   bool
 	gpuPool *gpuDecoderPool     // non-nil when -gpu-preprocess is set
 	cpuPool *cpuDecoderPool     // non-nil when -cpu-preprocess is set (libjpeg-turbo)
-	hybrid  *hybridPreprocessor // non-nil when BOTH are set (Phase 7: CPU primary, GPU overflow)
+	hybrid  *hybridPreprocessor // non-nil when both are set (CPU primary, GPU overflow)
 }
 
 type predictResponse struct {
@@ -192,10 +196,10 @@ type errorResponse struct {
 	Error string `json:"error"`
 }
 
-// bodyBufPool recycles request-body staging buffers (Phase 7: io.ReadAll's
-// doubling growth was ~40% of all allocation at 1,900 req/s). The buffer must
-// stay checked out until Preprocess returns — the cgo decoders read the raw
-// bytes in place.
+// bodyBufPool recycles request-body staging buffers; io.ReadAll's doubling
+// growth was ~40% of all allocation under load. The buffer must stay checked
+// out until Preprocess returns, because the cgo decoders read the raw bytes
+// in place.
 var bodyBufPool = sync.Pool{New: func() any { return new(bytes.Buffer) }}
 
 // readBodyPooled drains r into a pooled buffer. On success the caller owns the
@@ -234,8 +238,8 @@ func (s *server) handlePredict(w http.ResponseWriter, r *http.Request) {
 	var input []float32
 	format := "jpeg"
 	if strings.HasPrefix(r.Header.Get("Content-Type"), rawTensorContentType) {
-		// Raw-tensor path: the client already did decode+resize+normalize; the
-		// body is the tensor itself, so this measures everything EXCEPT decode.
+		// The client already did decode+resize+normalize; the body is the
+		// tensor itself.
 		buf, rerr := readBodyPooled(body)
 		if rerr != nil {
 			writeError(w, http.StatusBadRequest, "could not read tensor body: "+rerr.Error())
@@ -251,7 +255,7 @@ func (s *server) handlePredict(w http.ResponseWriter, r *http.Request) {
 		bodyBufPool.Put(buf)
 		format = "raw"
 	} else if strings.HasPrefix(r.Header.Get("Content-Type"), rawRGBContentType) {
-		// Raw-RGB path: client did decode+resize+crop; server does only the
+		// The client did decode+resize+crop; the server only runs the
 		// /255 + mean/std normalize into the pooled NCHW tensor (~0.3 ms).
 		buf, rerr := readBodyPooled(body)
 		if rerr != nil {
@@ -268,9 +272,9 @@ func (s *server) handlePredict(w http.ResponseWriter, r *http.Request) {
 		bodyBufPool.Put(buf)
 		format = "raw-rgb"
 	} else if s.hybrid != nil || s.cpuPool != nil || s.gpuPool != nil {
-		// All three raw-JPEG paths (hybrid / libjpeg-turbo / nvJPEG) need the
-		// compressed bytes; read them into a pooled buffer (Phase 7). JPEG-only;
-		// PNGs aren't exercised by the load test.
+		// All three JPEG paths (hybrid / libjpeg-turbo / nvJPEG) need the
+		// compressed bytes in one buffer. JPEG only; PNG falls to the
+		// pure-Go path below.
 		buf, rerr := readBodyPooled(body)
 		if rerr != nil {
 			writeError(w, http.StatusBadRequest, "could not read image body: "+rerr.Error())
@@ -278,7 +282,7 @@ func (s *server) handlePredict(w http.ResponseWriter, r *http.Request) {
 		}
 		switch {
 		case s.hybrid != nil:
-			// Hybrid (Phase 7): CPU decoders while they have slack, GPU overflow.
+			// CPU decoders while they have slack, GPU for overflow.
 			input, err = s.hybrid.Preprocess(buf.Bytes())
 		case s.cpuPool != nil:
 			// CPU path (libjpeg-turbo): SIMD decode keeps preprocessing off the
@@ -305,14 +309,14 @@ func (s *server) handlePredict(w http.ResponseWriter, r *http.Request) {
 	}
 
 	pred, err := s.engine.Predict(input)
-	// Predict copied the tensor into the batch buffer; recycle it (Phase 7).
+	// Predict has copied the tensor into the batch buffer, so recycle it.
 	inputPool.Put(input)
 	if err != nil {
 		log.Printf("inference error: %v", err)
 		writeError(w, http.StatusInternalServerError, "inference failed")
 		return
 	}
-	
+
 	if !s.quiet {
 		log.Printf("predict: format=%s -> class=%d (%s) conf=%.4f", format, pred.ClassIndex, pred.ClassName, pred.Confidence)
 	}
@@ -323,10 +327,9 @@ func (s *server) handlePredict(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleStats reports the timing breakdown used to locate the throughput
-// bottleneck (Phase 4 diagnostics). GET /stats returns the cumulative averages;
-// GET /stats?reset=1 zeroes the counters first (call between load levels to
-// measure one level in isolation).
+// handleStats reports the per-stage timing breakdown. GET /stats returns
+// cumulative averages; GET /stats?reset=1 zeroes the counters first, which is
+// how a single load level is measured in isolation.
 func (s *server) handleStats(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("reset") == "1" {
 		s.engine.ResetStats()
@@ -368,7 +371,7 @@ func (s *server) handleStats(w http.ResponseWriter, r *http.Request) {
 		out["decode_cpu"] = c
 		out["decode_gpu"] = g
 	}
-	// GC observability (Phase 7): cumulative allocation and GC count since start.
+	// Cumulative allocation and GC count since start.
 	var ms runtime.MemStats
 	runtime.ReadMemStats(&ms)
 	out["total_alloc_mb"] = float64(ms.TotalAlloc) / (1 << 20)

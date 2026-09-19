@@ -7,7 +7,7 @@ import (
 )
 
 // TestPipelineRoutingStressIoBinding is the multi-lane routing stress with
-// -io-binding on (Phase 9 Task 2): full batches run through pre-bound slots
+// -io-binding on: full batches run through pre-bound slots
 // that are REUSED across batches and recycled by unpack workers, so a slot
 // returned to the pool too early (or bound outputs read after reuse) would
 // surface here as swapped answers. Small maxBatch + many concurrent requests
@@ -72,7 +72,7 @@ func TestPipelineRoutingStressIoBinding(t *testing.T) {
 }
 
 // TestPipelineRoutingStressDeviceBinding is the same stress with
-// -device-binding on (Phase 9 Task 4): full batches go through engine-owned
+// -device-binding on: full batches go through engine-owned
 // CUDA device buffers with pinned-host staging and engine-driven H2D/D2H.
 // Wrong answers here would mean copy/compute ordering bugs or slot recycling
 // races on the device path.

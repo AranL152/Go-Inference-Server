@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Phase 3 correctness tests: pure routing unit tests + GPU integration tests
-# (mixed-batch no-swap, known-answer-under-load). Uses the same lib paths as run.sh.
+# Correctness tests: pure routing unit tests plus GPU integration tests
+# (mixed-batch no-swap, known-answer-under-load). Same lib paths as run.sh.
 set -e
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export PATH="$HOME/sdk/go/bin:$HOME/go/bin:$PATH"

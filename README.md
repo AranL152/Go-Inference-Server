@@ -1,139 +1,176 @@
 # go-inference-server
 
-A GPU inference server for ResNet-18 written in Go (ONNX Runtime, CUDA execution
-provider), taken from **345 to ~9,100 req/s on a single RTX 4080 SUPER** across
-nine measured optimization phases — a 26× improvement on the same hardware, with
-every step profiled, every hypothesis tested, and every negative result kept on
-the books.
+An HTTP inference server for ResNet-18 written in Go, running on ONNX Runtime's
+CUDA execution provider. It loads the model onto the GPU once, batches incoming
+requests dynamically, and serves top-1 ImageNet predictions.
 
-```
-345 ──► 1,463 ──► 1,790 ──► 2,130 ──► 7,500 ──► 9,100 req/s
- P2       P4       P6        P7        P8        P9
-```
+The point of the repo is throughput on one card: it went from 345 req/s to about
+9,100 req/s on a single RTX 4080 SUPER, and everything in `loadtest/` exists so
+that number is measured rather than claimed.
 
-## The journey
+## What's in it
 
-Each phase attacked the bottleneck the previous phase's measurements exposed.
-Full write-ups live in `PHASE1.md`–`PHASE9.md` (specs in `PHASE*_SPEC.md`, raw
-load-test data in `results/`).
+- `main.go` — HTTP layer, request-body handling, three request contracts
+- `engine.go` — the ORT session, dynamic batcher, infer lanes, unpack workers,
+  backpressure, I/O binding paths
+- `preprocess.go` — pure-Go decode, resize, center-crop, normalize
+- `cpu_decode.go` — libjpeg-turbo (SIMD) decoder pool, the default decode path
+- `gpu_decode.go` — nvJPEG + NPP decoder pool (decode and resize on the GPU)
+- `hybrid_decode.go` — router that uses CPU decoders first and the GPU as overflow
+- `cudamem.go` — cudaMalloc / cudaHostAlloc / cudaMemcpy wrappers for the
+  device-resident binding path
+- `metrics.go` — hand-rolled Prometheus endpoint
+- `onnxruntime_go_fork/` — local fork of `github.com/yalue/onnxruntime_go` adding
+  a `DeviceTensor` (~90 lines), wired in through a `go.mod` replace
+- `loadtest/` — closed-loop and open-loop load generator with nvidia-smi sampling
+- `convert_fp16.py` — fp32 to fp16 model conversion
 
-| Phase | Lever | Result (req/s) | What the measurements said |
-|---|---|---:|---|
-| 1 | Long-running HTTP server, persistent CUDA session | — | baseline correctness |
-| 2 | Load-test harness (`loadtest/`) | 345 | mutex serializes inference; GPU ~62% idle |
-| 3 | Dynamic batching coordinator | 338 | **no gain** — real bottleneck was CPU JPEG decode (realized batch ≈ 1.3) |
-| 4 | GPU preprocessing (nvJPEG + NPP via cgo) | 1,463 | batches finally fill (20–29); new wall: single collector goroutine |
-| 5 | Pipelined collector + backpressure (`-max-inflight`) | 1,500 | **+3% only** — disproved Phase 4's theory; real wall was decode↔inference SM contention |
-| 6 | CPU decode via libjpeg-turbo SIMD (`-cpu-preprocess`) | 1,790 | GPU util 63%→35%, per-batch Run 24→8 ms; bottleneck moved to Huffman-bound CPU decode |
-| 7 | Allocation pooling (pprof-guided `sync.Pool`s) | 2,130 | 1.9 MB→42 KB garbage/request; hybrid CPU+GPU decode built, measured, **rejected** |
-| 8 | Raw-tensor contract + concurrent infer lanes + FP16 | 7,500 | decode off the wire entirely; lanes overlap H2D with compute |
-| 9 | Device-resident I/O binding (forked Go binding + `cudaMalloc`/pinned staging) | **8,700 raw / 9,100 raw-RGB** | ORT's pageable H2D removed from the serialized path; per-Run 20.4→15.0 ms |
+## Endpoints
 
-At the final operating point the GPU sits at ~91% utilization under open-loop
-saturation with p50 ≈ 10 ms — the remaining headroom is in the compute itself
-(TensorRT EP, INT8), not the serving path.
-
-## Architecture
-
-```
-POST /predict ──► backpressure gate (-max-inflight, sheds 503 BEFORE decode)
-                        │
-              preprocess (per content type)
-                ├─ image/jpeg      → libjpeg-turbo SIMD pool (or nvJPEG, or hybrid)
-                ├─ x-raw-rgb       → server-side normalize only (150 KB uint8)   ◄ fastest
-                └─ x-raw-tensor    → memcpy into pooled NCHW tensor (602 KB f32)
-                        │
-              dynamic batcher (gather ≤ max-batch or max-wait)
-                        │  packs into PINNED host staging
-              N infer lanes on ONE shared ORT session (-infer-lanes)
-                        │  engine-owned cudaMalloc device buffers, bound once;
-                        │  lane does its own H2D, Run, 128 KB logits D2H
-              unpack workers ──► per-request top-1 response
-```
-
-Key design points:
-
-- **Dynamic batching** with a gather window (`-max-batch 32 -max-wait 5ms`);
-  batch 32 is measured optimal — per-image Run cost *rises* with batch on this
-  model/card (0.24 ms @ 32 → 1.08 ms @ 128).
-- **Concurrent infer lanes** on a single session: per-Run time inflates
-  (CUDA-stream serialization) but overlapping pack + H2D with compute nets +31%.
-- **Device-resident I/O** (`-device-binding`): ~90 lines added to a local fork
-  of `onnxruntime_go` (`onnxruntime_go_fork/`, wired via a go.mod replace)
-  expose CUDA memory-info and a `DeviceTensor`; `cudamem.go` drives
-  cudaMalloc/cudaHostAlloc/cudaMemcpy via libcudart.
-- **Allocation discipline**: pooled request bodies, input tensors, and batch
-  staging buffers — 45× less garbage per request, ~9 GCs per load sweep instead
-  of ~1,000.
-- **Backpressure before the expensive work**: overload p50 went from 3.7 s to
-  60 ms by gating ahead of decode.
-
-## Findings worth reading (including the failures)
-
-The phase docs record what *didn't* work with the same rigor as what did:
-
-- **The contract inversion** (Phase 9): once ORT's H2D copy left the hot path,
-  the network-realistic 150 KB uint8-RGB contract *beats* the 602 KB float32
-  tensor contract — HTTP byte-shoveling costs more than server-side normalize.
-- **CUDA Graphs is incompatible with dynamic batching** — three independent
-  confirmations; any Run with a new batch shape breaks post-capture.
-- **Two undocumented ORT IoBinding behaviors** found via a routing stress test:
-  CUDA sessions never write pre-bound CPU outputs (read via
-  `GetBoundOutputValues` only), and bound CPU inputs' device copies are cached
-  across runs (re-bind per batch).
-- **This RTX 4080 SUPER has no NVJPG hardware decode engine** — nvJPEG falls
-  back to CUDA cores and fights inference for SMs, which is why CPU decode won
-  (Phase 6) and hybrid spill lost (Phase 7).
-- **ORT ≥ 1.22 carries a ~20% fp32 per-Run regression** vs 1.18.1 on this
-  model (measured identical on 1.22/1.26/1.27) — accepted deliberately because
-  every remaining lever lives on FP16.
+| Endpoint | Purpose |
+|---|---|
+| `POST /predict` | inference; `image/jpeg`, `application/x-raw-rgb`, or `application/x-raw-tensor` |
+| `GET /health` | liveness plus device-placement check |
+| `GET /stats` | per-stage timing averages (`?reset=1` to zero between load levels) |
+| `GET /metrics` | Prometheus exposition: pipeline counters, latency histogram, decoder pools, Go runtime |
+| `/debug/pprof/` | live CPU and allocation profiles |
 
 ## Running it
 
-Requires Linux (built under WSL2), an NVIDIA GPU, CUDA 12.6, cuDNN 9, ONNX
-Runtime 1.27.1 GPU build, and `libturbojpeg0-dev`. See `SETUP.md` for the full
-environment bring-up (the `onnxruntime/` and `cudnn9/` library directories are
-not committed — too large for GitHub).
+Linux with an NVIDIA GPU, CUDA 12.6, cuDNN 9, an ONNX Runtime 1.27.1 GPU build,
+and `libturbojpeg0-dev`. The `onnxruntime/` and `cudnn9/` library directories are
+not committed; `SETUP.md` covers how to get them and what the version
+constraints are.
 
 ```bash
-# Build + run at the recommended throughput operating point
+# throughput operating point
 ./run.sh -cpu-preprocess -quiet -max-batch 32 -infer-lanes 5 \
          -model resnet18_fp16.onnx -device-binding
 
-# Classify an image
+# classify an image
 curl -X POST --data-binary @testdata/dog.jpg localhost:8080/predict
 # {"class_index":258,"class_name":"Samoyed","confidence":0.90}
 
-# Fastest client contract: pre-decoded 224x224 RGB, 150,528 bytes
+# pre-decoded 224x224 RGB body (150,528 bytes), the fastest contract
 curl -X POST -H 'Content-Type: application/x-raw-rgb' \
      --data-binary @img.rgb localhost:8080/predict
 ```
 
-Endpoints:
-
-| Endpoint | Purpose |
-|---|---|
-| `POST /predict` | inference — `image/jpeg`, `application/x-raw-rgb`, or `application/x-raw-tensor` |
-| `GET /health` | liveness + device placement check |
-| `GET /stats` | human-readable per-stage timing averages (`?reset=1` between load levels) |
-| `GET /metrics` | Prometheus exposition: pipeline counters, `/predict` latency histogram, decoder-pool and Go runtime stats |
-| `/debug/pprof/` | live CPU/alloc profiling |
-
-Load testing (closed- and open-loop):
+Tests: `./gotest.sh` (unit tests plus GPU integration tests) and `./smoke.sh`
+against a running server. Load tests:
 
 ```bash
 cd loadtest && go build .
-./loadtest -levels 64,128,256 -n 48000 -warmup 1000 -raw-rgb   # ≥48k per level — shorter runs sit inside GPU boost-clock ramp
+./loadtest -levels 64,128,256 -n 48000 -warmup 1000 -raw-rgb
 ```
 
-## Repo layout
+Use at least ~48k requests per level. Shorter runs finish inside the GPU's
+boost-clock ramp and read low.
 
-- `main.go`, `engine.go`, `preprocess.go`, `metrics.go` — server, batching
-  pipeline, CPU preprocess, Prometheus endpoint
-- `cpu_decode.go` / `gpu_decode.go` / `hybrid_decode.go` — the three decoder
-  pools (libjpeg-turbo / nvJPEG+NPP / CPU-primary-GPU-overflow)
-- `cudamem.go` — CUDA allocation helpers for device-resident binding
-- `onnxruntime_go_fork/` — local binding fork adding `DeviceTensor` (~90 lines)
-- `loadtest/` — the measurement harness every phase's numbers come from
-- `PHASE*.md` — the investigation record; `results/` — raw CSV/JSON per run
-- `convert_fp16.py` — fp32 → fp16 model conversion (keep_io_types)
+## How it works
+
+```
+POST /predict -> in-flight gate (-max-inflight, sheds 503 before decode)
+                     |
+              preprocess by content type
+                ├─ image/jpeg          libjpeg-turbo pool (or nvJPEG, or hybrid)
+                ├─ x-raw-rgb           normalize only (150 KB uint8 body)
+                └─ x-raw-tensor        memcpy into a pooled NCHW tensor (602 KB)
+                     |
+              gatherer: batch up to -max-batch, or flush after -max-wait,
+              packing into pinned host staging
+                     |
+              N infer lanes on one shared ORT session (-infer-lanes)
+              engine-owned device buffers bound once; each lane does its own
+              H2D, Run, and 128 KB logits D2H
+                     |
+              unpack workers -> per-request top-1 response
+```
+
+Notable details:
+
+- Batch 32 is the measured optimum on this model and card. Per-image Run cost
+  rises with batch size (0.24 ms at 32, 1.08 ms at 128), so bigger batches lose.
+- Several infer lanes share one session. Per-Run time inflates because CUDA work
+  serializes, but overlapping pack and H2D with compute still nets about +31%.
+- `-device-binding` binds cudaMalloc'd buffers once and keeps ORT's pageable
+  host-to-device copy out of the serialized path.
+- Request bodies, input tensors, and batch staging buffers are pooled: about
+  42 KB of garbage per request instead of 1.9 MB.
+- Backpressure is taken before decode, so overload sheds instead of queueing.
+
+At the final operating point the GPU runs at about 91% utilization under
+open-loop saturation with a p50 around 10 ms. What is left is in the compute
+itself (TensorRT execution provider, INT8), not in the serving path.
+
+## Improvements
+
+Each step was driven by whatever the previous measurement pointed at.
+
+1. **Persistent server and session (345 req/s).** Loading the model and creating
+   the CUDA session once at startup instead of per request; a per-request session
+   re-uploads the weights every time.
+2. **Load-test harness.** Closed-loop and open-loop generator with latency
+   percentiles and GPU sampling; every number below comes from it.
+3. **Dynamic batching (338 req/s).** No throughput change, because realized batch
+   size was 1.3: requests never queued up long enough to batch. It did show where
+   the time actually went.
+4. **GPU preprocessing with nvJPEG and NPP (1,463 req/s).** Moving JPEG decode and
+   resize off the CPU let batches fill to 20-29 images and quadrupled throughput.
+5. **Pipelined gather/infer/unpack plus backpressure (1,500 req/s).** Only +3% on
+   throughput, but the in-flight gate cut overload p50 from 3.7 s to 60 ms.
+6. **CPU decode via libjpeg-turbo (1,790 req/s).** SIMD decode on the CPU freed
+   the GPU from decode work: GPU utilization dropped 63% to 35% and per-batch Run
+   went from 24 ms to 8 ms.
+7. **Allocation pooling (2,130 req/s).** pprof pointed at request bodies, input
+   tensors, and batch staging; pooling all three cut garbage per request from
+   1.9 MB to 42 KB and GC runs per sweep from ~1,000 to ~9.
+8. **Raw contracts, infer lanes, FP16 (7,500 req/s).** Letting clients send
+   pre-decoded bodies took decode off the server entirely, concurrent lanes
+   overlapped copy with compute, and FP16 weights cut Run time further.
+9. **Device-resident I/O binding (8,700 raw / 9,100 raw-RGB req/s).** About 90
+   lines added to a fork of the Go binding expose CUDA memory info and a
+   `DeviceTensor`, so the engine owns its device buffers and pinned staging;
+   per-Run time went from 20.4 ms to 15.0 ms.
+10. **Prometheus endpoint.** The counters that were already being collected for
+    the tuning work, exported at `/metrics` with a `/predict` latency histogram.
+
+## Challenges
+
+- **Batching alone did nothing.** Throughput was flat until realized batch size
+  was instrumented, which showed batches of 1.3 and pointed at CPU JPEG decode as
+  the actual limit.
+- **A wrong diagnosis cost a phase of work.** Pipelining was built on the theory
+  that a single collector goroutine was the ceiling; it returned 3%, and the real
+  wall turned out to be GPU decode and inference contending for SMs.
+- **This card has no NVJPG hardware decoder.** nvJPEG silently runs on CUDA
+  cores, so GPU decode steals SMs from inference and tripled per-batch Run time
+  when it carried every decode. That is why CPU decode won.
+- **nvJPEG scale-factor decode does not save time.** Entropy decode happens
+  before scaling, so 1/4-scale decode costs about the same as full size, and
+  cheaper GPU decode was not available as a lever.
+- **Hybrid CPU-primary/GPU-overflow decode was rejected.** It was built and
+  measured; spilling to the GPU cost more inference time than the extra decode
+  capacity was worth.
+- **CUDA Graphs is incompatible with dynamic batching.** Confirmed three
+  independent ways: any Run with a new batch shape invalidates the captured
+  graph, so capture cannot survive variable batch sizes.
+- **Two undocumented ORT IoBinding behaviors.** A CUDA session never writes a
+  pre-bound CPU output (read it with `GetBoundOutputValues` instead), and a bound
+  CPU input's device copy is cached across runs, so it must be re-bound per
+  batch. Both surfaced as 992 of 1000 wrong answers in a routing stress test.
+- **ORT 1.22 and later carry a ~20% fp32 regression.** Per-Run fp32 time is ~20%
+  worse than 1.18.1 on this model, identical on 1.22, 1.26 and 1.27, and not
+  fixable through provider options. Accepted, since the remaining wins are on
+  FP16.
+- **Bigger batches are slower per image.** Per-image Run cost rises from 0.24 ms
+  at batch 32 to 1.08 ms at batch 128, so the batch-size knob has an optimum well
+  below the maximum.
+- **The fastest contract was the smaller one.** Once ORT's host-to-device copy
+  left the hot path, the 150 KB uint8 RGB body beat the 602 KB float32 tensor
+  body: moving bytes over HTTP costs more than normalizing them server-side.
+- **The FP16 conversion needed model surgery.** The GluonCV export is opset 8
+  with every weight listed as a graph input, so it needed an opset upgrade and
+  initializer-input removal before `keep_io_types` conversion would load.
+- **Short load runs lie.** Runs under ~48k requests per level land inside the
+  GPU's boost-clock ramp and report low; all comparisons use longer runs.

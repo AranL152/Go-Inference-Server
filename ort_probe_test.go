@@ -10,24 +10,23 @@ import (
 	ort "github.com/yalue/onnxruntime_go"
 )
 
-// TestORTConcurrencyProbe is the Phase 5 Task-1 gate. It bypasses the batching
-// collector and hammers session.Run() directly with a fixed batch, to answer two
-// questions that decide the Phase 5 pipeline design:
+// TestORTConcurrencyProbe bypasses the batching pipeline and hammers
+// session.Run() directly with a fixed batch, to answer two questions about how
+// many sessions the engine should own:
 //
-//	A) Does ONE session serialize concurrent Run() calls, or overlap them?
+//	A) Does one session serialize concurrent Run() calls, or overlap them?
 //	B) Do N separate sessions give true compute interleaving on this one GPU?
 //
-// If one session already overlaps (B>A), a single infer lane suffices and we just
-// overlap pack/unpack. If it serializes, we need multiple sessions (lanes) to push
-// past the ~1,450 ceiling — or accept that Run() is the hard floor.
+// The measured answer here was that extra sessions do not help, which is why
+// the engine keeps one session and adds infer lanes on top of it.
 func TestORTConcurrencyProbe(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skip GPU probe in -short")
 	}
 	// This probe manages its OWN ORT environment (Initialize/DestroyEnvironment),
 	// which conflicts with the other GPU tests' lifecycle when run in the same test
-	// binary. It is a standalone one-off diagnostic — run it explicitly with
-	// ORT_PROBE=1 (its findings are recorded in PHASE5.md / Task 1).
+	// binary. It is a standalone diagnostic: run it explicitly with
+	// ORT_PROBE=1.
 	if os.Getenv("ORT_PROBE") == "" {
 		t.Skip("standalone ORT probe; run with ORT_PROBE=1 (owns its ORT env)")
 	}

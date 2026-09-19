@@ -7,8 +7,8 @@ import (
 	"testing"
 )
 
-// BenchmarkPreprocess measures the full decode→resize→normalize pipeline (the
-// Phase 3 headline ~38ms number).
+// BenchmarkPreprocess measures the full pure-Go decode, resize and normalize
+// path (~38ms per image).
 func BenchmarkPreprocess(b *testing.B) {
 	raw, err := os.ReadFile("testdata/dog.jpg")
 	if err != nil {

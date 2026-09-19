@@ -1,19 +1,19 @@
-// Phase 7: hybrid CPU+GPU decode routing.
+// Hybrid CPU+GPU decode routing.
 //
-// After Phase 6 the CPU (libjpeg-turbo) does all decoding and saturates ~13-14
-// of 16 cores at ~1,900 req/s while the GPU sits ~65% idle (inference-only
-// ceiling ~5,885/s). The GPU also has a working nvJPEG decode path (Phase 4,
-// ~2,100/s standalone) — but GPU decode contends with inference for SMs (the
-// Phase 6 lesson: it tripled per-batch inference time when it carried ALL
-// decodes). So the router treats the GPU as strictly OVERFLOW capacity:
+// With libjpeg-turbo doing all decoding, the CPU saturates 13-14 of 16 cores at
+// ~1,900 req/s while the GPU sits ~65% idle. The GPU has a working nvJPEG
+// decode path (~2,100/s standalone), but GPU decode contends with inference for
+// SMs: carrying every decode tripled per-batch inference time. So the router
+// treats the GPU as overflow capacity only:
 //
-//   1. If a CPU decoder is free, use it (never touch the GPU while CPU has slack).
-//   2. Only when ALL CPU decoders are busy, wait on BOTH pools and take
-//      whichever frees a decoder first.
+//  1. If a CPU decoder is free, use it (never touch the GPU while the CPU has
+//     slack).
+//  2. Only when all CPU decoders are busy, wait on both pools and take
+//     whichever frees a decoder first.
 //
 // The GPU pool size (-gpu-decoders) caps how much decode contention inference
-// can suffer; tune it while watching avg_infer_run_ms (Phase 4 failure mode:
-// it climbing back toward 24ms means the spill is too aggressive).
+// can suffer; tune it while watching avg_infer_run_ms. It climbing back toward
+// 24ms means the spill is too aggressive.
 package main
 
 import "sync/atomic"

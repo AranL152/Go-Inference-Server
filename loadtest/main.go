@@ -1,15 +1,15 @@
-// Phase 2 — concurrent load baseline (measurement only).
+// HTTP load generator for the inference server.
 //
-// A closed-loop HTTP load generator for the Phase 1 inference server. It fires a
-// fixed number of POST /predict requests using a configurable number of
-// simultaneously in-flight requests (concurrency), records every request's
-// latency, and reports throughput (req/s) and latency percentiles (p50/p95/p99).
+// Closed loop: fire a fixed number of POST /predict requests at a configurable
+// number of simultaneously in-flight requests, record every latency, and report
+// throughput (req/s) and percentiles (p50/p95/p99). Open loop (-rates): fire at
+// a fixed offered rate regardless of when responses come back, which is what
+// distinguishes a server limit from a client-side one.
 //
-// While each concurrency level runs, a background goroutine polls nvidia-smi so
-// we can show whether the GPU is actually busy or sitting idle between the
-// server's serialized (mutex-guarded) inferences.
+// A background goroutine polls nvidia-smi during each level, so the report
+// shows whether the GPU was busy or idle.
 //
-// This tool does NOT modify or import the server — it only talks to it over HTTP.
+// The tool talks to the server over HTTP only; it does not import it.
 package main
 
 import (
@@ -40,7 +40,7 @@ func main() {
 	imagesDir := flag.String("images", "testdata", "directory of test images to cycle through")
 	imageNames := flag.String("imagefiles", "dog.jpg,cat.jpg", "comma-separated image filenames within -images")
 	gpuInterval := flag.Duration("gpu-interval", 100*time.Millisecond, "nvidia-smi poll interval during a run")
-	outPrefix := flag.String("out", "phase2_results", "prefix for raw results files (.json/.csv)")
+	outPrefix := flag.String("out", "loadtest_results", "prefix for raw results files (.json/.csv)")
 	ratesCSV := flag.String("rates", "", "OPEN-LOOP mode: comma-separated offered rates (req/s) to fire regardless of responses; if set, overrides closed-loop -levels")
 	rateDur := flag.Duration("rate-dur", 15*time.Second, "open-loop: measurement duration per rate")
 	maxInflight := flag.Int("max-inflight", 8192, "open-loop: cap on concurrent in-flight requests (overruns counted, not blocked)")
@@ -105,9 +105,9 @@ func main() {
 		log.Fatalf("server not reachable at %s: %v", url, err)
 	}
 
-	// Open-loop mode: fire at fixed offered rates regardless of responses. This
-	// decouples offered load from the closed-loop client and tells us whether the
-	// ~1,460 plateau is the server or the measurement.
+	// Open-loop mode: fire at fixed offered rates regardless of responses, which
+	// decouples offered load from the client and shows whether a throughput
+	// plateau belongs to the server or to the measurement.
 	if *ratesCSV != "" {
 		rates := parseInts(*ratesCSV)
 		log.Printf("server OK at %s — OPEN-LOOP, offered rates %v req/s, %s each", url, rates, *rateDur)

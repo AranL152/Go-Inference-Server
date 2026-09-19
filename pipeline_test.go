@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// TestPipelineRoutingStress hammers the Phase 5 pipeline with many concurrent
+// TestPipelineRoutingStress hammers the pipeline with many concurrent
 // mixed dog/cat requests at a small batch size, so batches form constantly and
 // the parallel unpack workers are busy. Every caller must get ITS image's answer
 // back — a routing bug introduced by the gather→infer→unpack handoffs would show

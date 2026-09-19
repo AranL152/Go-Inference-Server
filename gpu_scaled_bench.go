@@ -1,16 +1,16 @@
-// Phase 6 Task 2 GATE: does nvJPEG scale-factor downscale decode actually make
-// decoding cheaper, or is decode Huffman-bound (entropy decode happens before
-// any scaling, so 1/4 ≈ NONE)?
+// Benchmark: does nvJPEG scale-factor downscale decode make decoding cheaper,
+// or is decode Huffman-bound (entropy decode happens before any scaling, so
+// 1/4 costs the same as full size)?
 //
-// We need only ~256px out of a ~1546px source. If decoding at NVJPEG_SCALE_1_BY_4
-// is materially faster than NVJPEG_SCALE_NONE, scaled GPU decode raises the
-// ~2,100 req/s decode-only ceiling and we build it into the pool. If 1/4 ≈ NONE,
-// decode is Huffman-bound and we pivot to a different lever.
+// Only ~256px of a ~1546px source is needed. If decoding at
+// NVJPEG_SCALE_1_BY_4 is materially faster than NVJPEG_SCALE_NONE, scaled GPU
+// decode raises the ~2,100 req/s decode-only ceiling and is worth building into
+// the pool.
 //
-// The single-phase nvjpegDecode does NOT support scale factors — only the
+// The single-phase nvjpegDecode does not support scale factors; only the
 // decoupled API (nvjpegDecodeJpegHost/TransferToDevice/Device with a
-// nvjpegDecodeParams carrying the scale factor) does. This file is a standalone
-// gate: it touches nothing in the server.
+// nvjpegDecodeParams carrying the scale factor) does. Standalone: this file
+// touches nothing in the server.
 package main
 
 /*

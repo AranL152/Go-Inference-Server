@@ -1,15 +1,13 @@
-// Phase 6 Path A: CPU JPEG preprocessing via libjpeg-turbo (TurboJPEG API).
+// CPU JPEG preprocessing via libjpeg-turbo (TurboJPEG API).
 //
-// The nvJPEG scale-factor gate proved GPU downscale decode is impossible on this
-// card (hardware-decoder-only; no NVJPG engine), and measurement showed CPU
-// scaled decode aggregates ~3,200/s across 16 cores — beating the ~2,100/s GPU
-// decode-only ceiling AND freeing the GPU to run inference only (5,885 ceiling).
+// This is the default decode path. Scaled CPU decode aggregates ~3,200/s across
+// 16 cores, which beats the ~2,100/s GPU decode-only ceiling and leaves the GPU
+// running inference only (~5,900/s ceiling).
 //
-// The win is SIMD libjpeg-turbo (~7ms full-res) vs Go's pure-Go image/jpeg
-// (~38ms); the 1/4 DCT prescale adds a smaller gain (decode is Huffman-bound) but
-// shrinks the downstream CPU resize + memory traffic, so we keep it. We decode
-// straight to RGBA and reuse the proven CPU resizeForModel + normalizeCHW tail —
-// Path A is, by design, just "swap the decoder."
+// Most of the win is SIMD libjpeg-turbo (~7ms full-res) against Go's pure-Go
+// image/jpeg (~38ms). The DCT prescale adds less, because decode is
+// Huffman-bound, but it shrinks the downstream resize and memory traffic. The
+// decode produces RGBA and the existing resize/normalize tail is reused.
 package main
 
 /*
@@ -256,8 +254,8 @@ func (p *cpuDecoderPool) Preprocess(jpeg []byte) ([]float32, error) {
 }
 
 // preprocessWith runs decode+normalize on an already-checked-out decoder and
-// returns it to the pool. Split from Preprocess so the hybrid router (Phase 7)
-// can select a free decoder across multiple pools before committing to one.
+// returns it to the pool. Split from Preprocess so the hybrid router can pick a
+// free decoder across pools before committing to one.
 func (p *cpuDecoderPool) preprocessWith(d *jpegDecoder, jpeg []byte) ([]float32, error) {
 	defer func() { p.free <- d }()
 

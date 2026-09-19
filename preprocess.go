@@ -1,16 +1,15 @@
 // Image preprocessing for ResNet-18 (resnet18-v1-7 / GluonCV).
 //
 // The ONNX model zoo recipe for this model:
-//   1. resize so the SHORTER side is 256 px (preserve aspect ratio)
-//   2. center-crop 224x224
-//   3. scale pixels to [0,1], then normalize per channel with
-//      mean = [0.485, 0.456, 0.406], std = [0.229, 0.224, 0.225]
-//   4. lay out as NCHW (channel-planar): [1, 3, 224, 224]
+//  1. resize so the SHORTER side is 256 px (preserve aspect ratio)
+//  2. center-crop 224x224
+//  3. scale pixels to [0,1], then normalize per channel with
+//     mean = [0.485, 0.456, 0.406], std = [0.229, 0.224, 0.225]
+//  4. lay out as NCHW (channel-planar): [1, 3, 224, 224]
 //
 // Resizing uses bilinear interpolation with the half-pixel coordinate convention
 // (align_corners=False), matching PIL/torchvision so predictions line up with the
-// reference recipe. Implemented without external deps to keep the cgo build setup
-// from Phase 0 untouched.
+// reference recipe. Written without external dependencies.
 package main
 
 import (

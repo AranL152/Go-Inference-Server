@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// Known-answer ImageNet indices for the Phase 1 correctness fixtures.
+// Known-answer ImageNet indices for the correctness fixtures.
 const (
 	classSamoyed     = 258 // testdata/dog.jpg
 	classEgyptianCat = 285 // testdata/cat.jpg
@@ -30,7 +30,7 @@ func loadAndPreprocess(t *testing.T, path string) []float32 {
 }
 
 // newTestEngine builds a real CUDA engine for integration tests. Requires the
-// ONNX Runtime libraries on LD_LIBRARY_PATH (see test_phase3.sh). Skips in -short.
+// ONNX Runtime libraries on LD_LIBRARY_PATH (see gotest.sh). Skips in -short.
 func newTestEngine(t *testing.T, maxBatch int, maxWait time.Duration) *Engine {
 	t.Helper()
 	if testing.Short() {
@@ -87,7 +87,7 @@ func TestMixedBatchNoSwap(t *testing.T) {
 	}
 }
 
-// TestKnownAnswersConcurrent re-runs the Phase 1 correctness check under load:
+// TestKnownAnswersConcurrent re-runs the known-answer check under load:
 // many concurrent dog/cat requests that get batched together must each still
 // return the right individual answer (no cross-contamination across a batch).
 func TestKnownAnswersConcurrent(t *testing.T) {

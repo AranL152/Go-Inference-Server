@@ -1,4 +1,4 @@
-// GPU inspection helpers, carried over from Phase 0.
+// GPU inspection helpers.
 //
 // WSL2's nvidia-smi reports per-process memory as [N/A], so the primary proof
 // that work landed on the GPU is the total GPU-memory delta around session

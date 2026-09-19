@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-// TestCPUDecodeScaleSweep — single-thread libjpeg-turbo decode of one image at
+// TestCPUDecodeScaleSweep runs single-thread libjpeg-turbo decode of one image at
 // full / 1/2 / 1/4 / 1/8, reporting ms/decode and speedup. Confirms the SIMD
 // decode cost and that scaling is only a modest (Huffman-bound) gain.
 // Run: go test -tags cpujpeg -run TestCPUDecodeScaleSweep -v .

@@ -432,11 +432,11 @@ OrtStatus *GetStringTensorElementLength(OrtValue *v, size_t index,
 OrtStatus *GetStringTensorElement(OrtValue *v, size_t buffer_length,
   size_t index, void *buffer);
 
+// Fork addition: OrtMemoryInfo describing CUDA device memory, for creating
+// OrtValues backed by externally managed device buffers.
+OrtStatus *CreateCudaMemoryInfoWrapper(int device_id, OrtMemoryInfo **mem_info);
+
 #ifdef __cplusplus
 }  // extern "C"
 #endif
 #endif  // ONNXRUNTIME_WRAPPER_H
-
-// Phase-9 fork addition: OrtMemoryInfo describing CUDA device memory, for
-// creating OrtValues backed by externally-managed device buffers.
-OrtStatus *CreateCudaMemoryInfoWrapper(int device_id, OrtMemoryInfo **mem_info);

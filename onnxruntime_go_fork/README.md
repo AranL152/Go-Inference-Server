@@ -1,3 +1,10 @@
+> **Fork note.** This is a local copy of
+> [github.com/yalue/onnxruntime_go](https://github.com/yalue/onnxruntime_go)
+> v1.31.0, used through a `replace` directive in the parent module. The only
+> change is `device_tensor.go`, which adds a `DeviceTensor` backed by
+> caller-owned CUDA device memory plus the CUDA memory-info accessors it needs.
+> Everything else below is upstream documentation.
+
 Cross-Platform `onnxruntime` Wrapper for Go
 ===========================================
 

@@ -9,9 +9,9 @@ import (
 	"time"
 )
 
-// TestNvjpegBackends reports which nvJPEG backends this GPU provides. The headline
-// Phase 4 question: is the dedicated HARDWARE (NVJPG) engine available — decode on
-// separate silicon, no contention with inference — or only GPU_HYBRID (CUDA cores)?
+// TestNvjpegBackends reports which nvJPEG backends this GPU provides: the
+// dedicated hardware NVJPG engine (decode on separate silicon, no contention
+// with inference) or only GPU_HYBRID (CUDA cores).
 func TestNvjpegBackends(t *testing.T) {
 	for _, b := range []nvjpegBackend{backendDefault, backendHybrid, backendGPUHybrid, backendHardware} {
 		ok, rc := gpuBackendAvailable(b)

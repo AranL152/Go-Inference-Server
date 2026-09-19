@@ -1,18 +1,18 @@
-// Prometheus metrics endpoint (post-Phase-9 operability).
+// Prometheus metrics endpoint.
 //
-// GET /metrics exposes the counters the phase investigations already collect
-// (engine batching/timing atomics, decoder-pool timings, Go runtime stats) in
-// the Prometheus text exposition format, plus a request-latency histogram for
-// /predict. Hand-rolled rather than importing the prometheus client: the whole
-// endpoint is a page of code and the project is deliberately dependency-light.
+// GET /metrics exposes the counters the server already keeps (engine
+// batching/timing atomics, decoder-pool timings, Go runtime stats) in the
+// Prometheus text exposition format, plus a request-latency histogram for
+// /predict. Hand-rolled rather than pulling in the prometheus client: the
+// endpoint is a page of code and the server has no other dependencies.
 //
-// Design notes:
-//   - Everything cumulative is exported as a counter (…_total, …_seconds_total)
+// Notes:
+//   - Everything cumulative is exported as a counter (_total, _seconds_total)
 //     so Prometheus can rate() it; /stats keeps serving the human-readable
 //     averages. /stats?reset=1 zeroes the engine counters, which Prometheus
 //     sees as an ordinary counter reset.
-//   - The histogram buckets span 1 ms – 2.5 s: p50 at saturation is ~10 ms and
-//     overload latencies pre-backpressure reached seconds (Phase 5).
+//   - The histogram buckets span 1 ms to 2.5 s: p50 at saturation is ~10 ms,
+//     and overload latencies before backpressure reached seconds.
 package main
 
 import (
@@ -101,7 +101,7 @@ func (s *server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "# HELP %s %s\n# TYPE %s gauge\n%s %g\n", name, help, name, name, v)
 	}
 
-	// Engine pipeline counters (the Phase 4-9 bottleneck-hunting instrumentation).
+	// Engine pipeline counters.
 	counter("inference_requests_total", "Requests that completed the batching pipeline.", float64(reqs))
 	counter("inference_batches_total", "Dynamic batches executed.", float64(batches))
 	counter("inference_rejected_total", "Requests shed by -max-inflight backpressure (HTTP 503).", float64(rejects))
@@ -153,7 +153,7 @@ func (s *server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "http_request_duration_seconds_sum{path=\"/predict\"} %g\n", float64(atomic.LoadInt64(&predictMetrics.latency.sumNs))/1e9)
 	fmt.Fprintf(w, "http_request_duration_seconds_count{path=\"/predict\"} %d\n", count)
 
-	// Go runtime (Phase 7 made GC pressure a first-class signal).
+	// Go runtime; GC pressure is a first-class signal here.
 	var ms runtime.MemStats
 	runtime.ReadMemStats(&ms)
 	gauge("go_goroutines", "Current number of goroutines.", float64(runtime.NumGoroutine()))

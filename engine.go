@@ -1,22 +1,19 @@
-// Persistent GPU inference engine with a dynamic batching coordinator (Phase 3).
+// Persistent GPU inference engine with a dynamic batching pipeline.
 //
-// Wraps a single ONNX Runtime session (CUDA execution provider) that is created
-// ONCE at server startup and reused for every request. Creating a session per
-// request would re-upload the model weights to the GPU each time — wasteful.
+// One ONNX Runtime session (CUDA execution provider) is created at startup and
+// reused for every request; a session per request would re-upload the model
+// weights to the GPU each time.
 //
-// Concurrency note (Phase 3): inference is no longer per-request mutex-serialized
-// (Phase 1). Instead a single long-running collector goroutine owns the GPU. HTTP
-// handlers submit a preprocessed image + a private result channel and block; the
-// collector assembles waiting requests into one batch (bounded by max batch size
-// OR max wait time, whichever fires first), runs ONE session.Run() on a
-// [N,3,224,224] input, then splits the [N,1000] output back to each caller. This
-// turns the GPU's idle batch-1 inferences (Phase 2 measured ~38% util) into fewer,
-// fuller forward passes.
+// HTTP handlers submit a preprocessed image plus a private result channel and
+// block. A gatherer goroutine assembles waiting requests into one batch
+// (bounded by max batch size or max wait, whichever fires first), an infer lane
+// runs a single session.Run on the [N,3,224,224] input, and unpack workers
+// split the [N,1000] output back to each caller. Batching is what keeps the GPU
+// busy: at batch 1 it sat around 38% utilization.
 //
-// The model (resnet18-v1-7) already declares a dynamic batch dim (input
-// data:[N,3,224,224] -> [N,1000]), so we use ORT's DynamicAdvancedSession and
-// build a fresh input tensor per batch rather than the fixed [1,...] tensor reused
-// in place in Phase 1.
+// The model (resnet18-v1-7) declares a dynamic batch dimension
+// ([N,3,224,224] -> [N,1000]), so the session is a DynamicAdvancedSession and
+// the input tensor is built per batch.
 package main
 
 import (
@@ -26,45 +23,41 @@ import (
 	"math"
 	"sync"
 	"sync/atomic"
-	"unsafe"
 	"time"
+	"unsafe"
 
 	ort "github.com/yalue/onnxruntime_go"
 )
 
 // ErrServerBusy is returned by Predict when the engine is at its in-flight limit
 // (backpressure). Handlers should map it to HTTP 503 so overload sheds load
-// instead of building an unbounded queue (the Phase 4 latency-collapse failure).
+// instead of building an unbounded queue, which collapses latency to seconds.
 var ErrServerBusy = errors.New("server busy: in-flight limit reached")
 
-// Pipeline tuning. One infer lane by default (the Phase 5 probe showed multiple
-// SESSIONS hurt); the channels are buffered just enough to let the gatherer pack
-// the next batch and the workers drain results while the lane runs.
+// Pipeline tuning. The channels are buffered just enough to let the gatherer
+// pack the next batch and the workers drain results while a lane runs.
 const (
-	inferChDepth = 2 // packed batches the gatherer may stay ahead by
+	inferChDepth  = 2 // packed batches the gatherer may stay ahead by
 	unpackChDepth = 16
 	numUnpackers  = 4 // split logits + reply in parallel, off the infer lane
 )
 
 // numInferLanes is how many inferLoop goroutines run concurrent session.Run
-// calls on the ONE shared session (ORT sessions are thread-safe). Phase 8: >1
-// overlaps one lane's implicit H2D copy inside Run with another lane's GPU
-// compute. Set from the -infer-lanes flag BEFORE NewEngine; default 1 keeps
-// Phase 5-7 behavior exactly.
+// calls on the one shared session (ORT sessions are thread-safe). More than one
+// lane overlaps a lane's H2D copy with another lane's GPU compute. Set from the
+// -infer-lanes flag before NewEngine.
 var numInferLanes = 1
 
-// cudaExtraOpts holds extra CUDA execution-provider options (Phase 9 Task 0:
-// ORT tuning keys like cudnn_conv_algo_search) merged into the provider
-// config at session creation. Set from the -cuda-opts flag BEFORE NewEngine;
-// nil/empty keeps the exact Phase 5–8 behavior.
+// cudaExtraOpts holds extra CUDA execution-provider options (ORT tuning keys
+// such as cudnn_conv_algo_search) merged into the provider config at session
+// creation. Set from the -cuda-opts flag before NewEngine.
 var cudaExtraOpts map[string]string
 
-// useIoBinding switches FULL batches to pre-bound fixed-shape I/O tensors via
-// ORT IoBinding (Phase 9 Task 2): no per-batch NewTensor/Destroy and no
-// ORT-side output allocation per Run. Partial (tail) batches always take the
-// plain Run path, so shapes stay exact and low-load latency is unchanged.
-// Set from the -io-binding flag BEFORE NewEngine; default false = Phase-8
-// behavior.
+// useIoBinding switches full batches to pre-bound fixed-shape I/O tensors via
+// ORT IoBinding: no per-batch NewTensor/Destroy and no ORT-side output
+// allocation per Run. Partial (tail) batches always take the plain Run path, so
+// shapes stay exact and low-load latency is unchanged. Set from the -io-binding
+// flag before NewEngine.
 var useIoBinding bool
 
 // numBindingSlots is how many pre-bound tensor sets circulate through
@@ -83,13 +76,13 @@ type bindingSlot struct {
 	inData  []float32
 }
 
-// useDeviceBinding switches FULL batches to DEVICE-RESIDENT pre-bound I/O
-// (Phase 9 Task 4, requires the forked binding + cudamem.go): the engine owns
-// cudaMalloc'd input/output buffers bound once via IoBinding, packs into
-// pinned host staging, and does the H2D/D2H copies itself. ORT then runs
-// entirely against fixed device addresses — no pageable staging copy inside
-// Run and no per-Run output allocation. Set from -device-binding BEFORE
-// NewEngine; wins over -io-binding if both are set.
+// useDeviceBinding switches full batches to device-resident pre-bound I/O
+// (requires the forked binding plus cudamem.go): the engine owns cudaMalloc'd
+// input/output buffers bound once via IoBinding, packs into pinned host
+// staging, and does the H2D/D2H copies itself. ORT then runs entirely against
+// fixed device addresses, with no pageable staging copy inside Run and no
+// per-Run output allocation. Set from -device-binding before NewEngine; takes
+// precedence over -io-binding.
 var useDeviceBinding bool
 
 // deviceSlot is one reusable device-resident I/O set. stage is pinned host
@@ -104,7 +97,6 @@ type deviceSlot struct {
 	binding       *ort.IoBinding
 }
 
-
 // ResNet-18 (resnet18-v1-7, GluonCV resnetv15) tensor geometry.
 const (
 	channels  = 3
@@ -114,9 +106,9 @@ const (
 	inputElems = channels * imageSize * imageSize
 )
 
-// inputPool recycles per-request NCHW tensors (Phase 7: these were ~30% of all
-// allocation, ~600KB per request). Every producer (preprocessTurbo, normalizeCHW,
-// normalizeRGBI) overwrites all inputElems elements, so Gets need no zeroing.
+// inputPool recycles per-request NCHW tensors, which at ~600KB each were ~30%
+// of all allocation. Every producer (preprocessTurbo, normalizeCHW,
+// normalizeRGB8) overwrites all inputElems elements, so Gets need no zeroing.
 // The HTTP handler returns the slice here after Predict — see the ownership note
 // on Predict. Storing the slice header boxes it into an interface (24B alloc per
 // Put); negligible next to the 600KB it saves.
@@ -172,16 +164,15 @@ type inferredBatch struct {
 
 // Engine owns the persistent ORT session and the inference pipeline.
 //
-// Phase 5 splits the old single collector goroutine into a 3-stage pipeline so
-// the non-compute work overlaps inference (Phase 4 measured ~1,450 req/s capped
-// not by GPU compute — which does ~5,900 — but by gather+pack+unpack running in
-// lockstep with Run on one goroutine):
+// Gather, infer and unpack run as separate stages so the non-compute work
+// overlaps inference; with all three on one goroutine, throughput capped at
+// ~1,450 req/s while the session itself could do ~5,900.
 //
 //	handlers -> submitCh -> [gather+pack] -> inferCh -> [infer] -> unpackCh -> [unpack+reply]
-//	                         1 goroutine               1 lane                  N workers
+//	                         1 goroutine              N lanes                  N workers
 //
-// The probe (Phase 5 Task 1) showed multiple sessions hurt, so there is ONE
-// session and ONE infer lane; the win comes purely from overlapping pack/unpack.
+// There is one session for the whole engine: a probe with several sessions on
+// the same device measured slower than one, so extra lanes share this session.
 type Engine struct {
 	session *ort.DynamicAdvancedSession
 
@@ -192,13 +183,13 @@ type Engine struct {
 	inName  string
 	outName string
 
-	// IoBinding slot pool (-io-binding, Phase 9 Task 2). nil when disabled.
+	// IoBinding slot pool (-io-binding). nil when disabled.
 	// slotPool circulates slots gather -> infer -> unpack -> back; slots keeps
 	// them all for Close to destroy after the pipeline drains.
 	slotPool chan *bindingSlot
 	slots    []*bindingSlot
 
-	// Device-resident slot pool (-device-binding, Phase 9 Task 4). nil when
+	// Device-resident slot pool (-device-binding). nil when
 	// disabled. Slots circulate gather -> infer -> back (the lane copies
 	// logits out before recycling); logitsPool recycles those host copies.
 	devSlotPool chan *deviceSlot
@@ -209,21 +200,21 @@ type Engine struct {
 	maxBatch int
 	maxWait  time.Duration
 
-	// batchBufPool recycles the batch staging buffer (Phase 7: ~14MB/batch was
-	// ~30% of all allocation). Buffers are always maxBatch*inputElems long;
+	// batchBufPool recycles the batch staging buffer; at ~14MB per batch it was
+	// ~30% of all allocation. Buffers are always maxBatch*inputElems long;
 	// packAndSend slices to the realized batch size (NewTensor requires exact
 	// length). Returned in inferLoop right after inT.Destroy() — ORT pins the Go
 	// slice only while the OrtValue lives.
 	batchBufPool sync.Pool
 
-	submitCh chan *batchRequest   // handlers -> gatherer
-	inferCh  chan *packedBatch    // gatherer -> infer lane
-	unpackCh chan *inferredBatch  // infer lane -> unpack workers
-	stopCh   chan struct{}        // closed to ask the pipeline to drain + exit
-	doneCh   chan struct{}        // closed once all stages have exited
-	unpackWG sync.WaitGroup       // tracks the unpack workers
-	inferWG  sync.WaitGroup       // tracks the infer lanes; last one out closes unpackCh
-	started  bool                 // true once the pipeline goroutines are running
+	submitCh chan *batchRequest  // handlers -> gatherer
+	inferCh  chan *packedBatch   // gatherer -> infer lane
+	unpackCh chan *inferredBatch // infer lane -> unpack workers
+	stopCh   chan struct{}       // closed to ask the pipeline to drain + exit
+	doneCh   chan struct{}       // closed once all stages have exited
+	unpackWG sync.WaitGroup      // tracks the unpack workers
+	inferWG  sync.WaitGroup      // tracks the infer lanes; last one out closes unpackCh
+	started  bool                // true once the pipeline goroutines are running
 
 	// inflight is a counting semaphore bounding concurrent in-flight requests
 	// (backpressure). nil = unlimited. Set via SetMaxInflight before serving.
@@ -239,8 +230,8 @@ type Engine struct {
 	// queue wait (submit -> infer start); statRunNs sums per-batch session.Run()
 	// duration; statRunBatchNs sums the infer lane's per-batch processing (Run +
 	// handoff). statBusyNs/statIdleNs split the INFER LANE's wall-clock into time
-	// processing vs blocked waiting for a packed batch — busy-fraction ~1.0 means
-	// the pipeline now keeps inference saturated (the goal).
+	// processing vs blocked waiting for a packed batch. A busy fraction near 1.0
+	// means the pipeline keeps inference saturated.
 	statWaitNs     int64
 	statRunNs      int64
 	statRunBatchNs int64
@@ -254,7 +245,7 @@ type Engine struct {
 // the average per-batch session.Run() time, the average per-batch infer-lane
 // processing time (Run + handoff), and the infer-lane busy-fraction (time
 // processing vs blocked waiting for a packed batch). A busy-fraction near 1.0
-// means the pipeline keeps the GPU lane saturated — the Phase 5 goal.
+// means the pipeline keeps the GPU lane saturated.
 func (e *Engine) TimingStats() (avgWaitMs, avgRunMs, avgBatchMs, busyFrac float64) {
 	batches := atomic.LoadInt64(&e.statBatches)
 	reqs := atomic.LoadInt64(&e.statReqs)
@@ -393,8 +384,8 @@ func NewEngine(modelPath, libPath string, labels []string, maxBatch int, maxWait
 	// model weights + CUDA context onto the card. A real GPU session moves the
 	// needle; a silent CPU fallback would not.
 	//
-	// Unlike Phase 1 we use a DynamicAdvancedSession: input/output tensors are
-	// supplied per Run() call, which is what lets the batch dimension N vary.
+	// A DynamicAdvancedSession takes its input/output tensors per Run() call,
+	// which is what lets the batch dimension N vary.
 	memBefore := gpuMemUsedMiB()
 	e.session, err = ort.NewDynamicAdvancedSession(modelPath,
 		[]string{e.inName}, []string{e.outName}, e.options)
@@ -437,8 +428,8 @@ func NewEngine(modelPath, libPath string, labels []string, maxBatch int, maxWait
 	}
 
 	// Start the pipeline: 1 gatherer -> N infer lanes -> N unpack workers.
-	// Multiple lanes (Phase 8) run concurrent Run calls on the one shared
-	// session; unpackCh is closed only after the LAST lane exits.
+	// Multiple lanes run concurrent Run calls on the one shared session;
+	// unpackCh is closed only after the last lane exits.
 	e.started = true
 	e.unpackWG.Add(numUnpackers)
 	for i := 0; i < numUnpackers; i++ {
@@ -468,7 +459,7 @@ func (e *Engine) GPUDeltaMiB() int { return e.gpuDelta }
 // SetMaxInflight bounds the number of requests that may be in flight at once.
 // n <= 0 means unlimited. Call once before serving traffic. Beyond the limit,
 // Predict returns ErrServerBusy so the server sheds load instead of queueing
-// unboundedly (which in Phase 4 collapsed latency to seconds under overload).
+// unboundedly, which collapsed latency to seconds under overload.
 func (e *Engine) SetMaxInflight(n int) {
 	if n <= 0 {
 		e.inflight = nil
@@ -481,8 +472,8 @@ func (e *Engine) SetMaxInflight(n int) {
 func (e *Engine) Rejects() int64 { return atomic.LoadInt64(&e.statRejects) }
 
 // Acquire takes an in-flight slot for backpressure, returning false if the limit
-// is reached (the caller should shed with 503). It MUST be paired with Release.
-// Handlers acquire at request entry — BEFORE the expensive GPU decode — so excess
+// is reached (the caller should shed with 503). It must be paired with Release.
+// Handlers acquire at request entry, ahead of the expensive decode, so excess
 // load is shed immediately instead of piling into the decoder pool. Unlimited
 // (SetMaxInflight(0)) always returns true.
 func (e *Engine) Acquire() bool {
@@ -532,11 +523,12 @@ func (e *Engine) Predict(input []float32) (Prediction, error) {
 	return res.pred, res.err
 }
 
-// collect is the gatherer stage: it forms a batch (bounded by maxBatch OR maxWait)
-// and assembles its [N,3,224,224] input tensor, then hands the packed batch to the
-// infer lane and immediately loops to gather the next — so the pack cost (15 MB
-// copy + H2D) overlaps the lane running the previous batch. On shutdown it drains
-// pending requests and closes inferCh, which unwinds the rest of the pipeline.
+// collect is the gatherer stage: it forms a batch (bounded by maxBatch or
+// maxWait) and assembles its [N,3,224,224] input tensor, then hands the packed
+// batch to an infer lane and immediately loops to gather the next, so the pack
+// cost (a 15 MB copy) overlaps the lane running the previous batch. On shutdown
+// it drains pending requests and closes inferCh, unwinding the rest of the
+// pipeline.
 func (e *Engine) collect() {
 	for {
 		// Block for the first request of a batch (or shutdown).
@@ -726,12 +718,12 @@ func (e *Engine) packAndSend(batch []*batchRequest) {
 }
 
 // inferLoop is a GPU-owning lane: it runs one packed batch at a time and hands
-// the output to the unpack workers. It does NOT split logits or reply — that
-// work runs in parallel downstream so it never stalls the lane. numInferLanes
-// of these run concurrently against the one shared session (Phase 8); the
-// inferWG waiter in NewEngine closes unpackCh after the last lane exits.
-// With >1 lane the busy/idle stats aggregate across lanes, so busyFrac reads
-// as the AVERAGE per-lane busy fraction.
+// the output to the unpack workers. Splitting logits and replying happen
+// downstream, in parallel, so they never stall the lane. numInferLanes
+// of these run concurrently against the one shared session; the inferWG waiter
+// in NewEngine closes unpackCh after the last lane exits. With more than one
+// lane the busy/idle stats aggregate, so busyFrac reads as the average per-lane
+// busy fraction.
 func (e *Engine) inferLoop() {
 	defer e.inferWG.Done()
 	for {
@@ -794,17 +786,18 @@ func (e *Engine) inferLoop() {
 
 		if pb.slot != nil {
 			// -io-binding path: the input tensor is pre-bound and refilled in
-			// place (no per-batch NewTensor/Destroy of a 14 MB pin). The
-			// output must be read back via GetBoundOutputValues — ORT does
-			// NOT reliably write a pre-bound CPU output value on a CUDA
-			// session (measured: 992/1000 garbage answers reading the bound
-			// tensor directly); this is also the binding library's own
-			// documented read pattern.
-			// Re-bind the input every batch: ORT caches the bound input's
-			// device copy across runs (SynchronizeBoundInputs is the C-API
-			// invalidation hook, not exposed by the Go binding), so without
-			// this every Run reuses the FIRST upload (measured: 992/1000
-			// wrong). Rebinding the refilled tensor forces a fresh H2D copy.
+			// place, avoiding a per-batch NewTensor/Destroy of a 14 MB pin.
+			//
+			// Two ORT behaviors to watch here. The output has to be read back
+			// with GetBoundOutputValues, because a CUDA session does not
+			// reliably write a pre-bound CPU output value (reading the bound
+			// tensor directly gave 992/1000 garbage answers); this is also the
+			// binding library's documented read pattern. And the input has to
+			// be re-bound every batch, because ORT caches the bound input's
+			// device copy across runs (SynchronizeBoundInputs, the C-API
+			// invalidation hook, is not exposed by the Go binding), so without
+			// it every Run reuses the first upload (992/1000 wrong).
+			// Re-binding the refilled tensor forces a fresh H2D copy.
 			runT := time.Now()
 			runErr := pb.slot.binding.BindInput(e.inName, pb.slot.in)
 			if runErr == nil {
@@ -878,9 +871,9 @@ func (e *Engine) inferLoop() {
 }
 
 // unpackLoop is a worker that splits a finished batch's [N,1000] logits into
-// per-request predictions and delivers each to its caller — preserving index
+// per-request predictions and delivers each to its caller, preserving index
 // correspondence (row i belongs to batch[i]). Runs in parallel with the infer
-// lane and other unpack workers.
+// lanes and the other unpack workers.
 func (e *Engine) unpackLoop() {
 	defer e.unpackWG.Done()
 	for ib := range e.unpackCh {
@@ -984,7 +977,7 @@ func (e *Engine) Close() {
 	}
 
 	// Slots are only touched by pipeline goroutines, which have all exited by
-	// here (doneCh) — safe to destroy the bindings and their tensors.
+	// here (doneCh), so the bindings and their tensors are safe to destroy.
 	for _, s := range e.slots {
 		s.binding.Destroy()
 		s.in.Destroy()

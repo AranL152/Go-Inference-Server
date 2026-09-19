@@ -6,11 +6,11 @@ import (
 	"time"
 )
 
-// TestPipelineRoutingStressMultiLane is TestPipelineRoutingStress with TWO
-// concurrent infer lanes sharing the one session (Phase 8, -infer-lanes 2).
-// The new hazard vs the single-lane test: batches complete out of order across
-// lanes, so any hidden ordering assumption in the gather→infer→unpack handoffs
-// would surface here as swapped answers or a double-close panic at shutdown.
+// TestPipelineRoutingStressMultiLane is TestPipelineRoutingStress with two
+// concurrent infer lanes sharing the one session (-infer-lanes 2). The hazard
+// the single-lane test cannot catch: batches complete out of order across
+// lanes, so any hidden ordering assumption in the gather/infer/unpack handoffs
+// shows up here as swapped answers or a double-close panic at shutdown.
 func TestPipelineRoutingStressMultiLane(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skip GPU test in -short")

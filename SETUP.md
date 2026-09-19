@@ -1,85 +1,84 @@
-# Phase 0 — GPU Inference Path Validation
+# Environment setup
 
-**Verdict: 🟢 GREEN.** A Go program loads an ONNX model and runs inference on the
-RTX 4080 via ONNX Runtime's CUDA execution provider. Proceed to Phase 1.
+The server needs an NVIDIA GPU, CUDA 12.6, cuDNN 9, an ONNX Runtime GPU build,
+and libjpeg-turbo. Two directories the build depends on are not committed
+because they are large and machine-specific: `onnxruntime/` and `cudnn9/`.
 
-## How to run
+## Versions this was built against
 
-```bash
-./run.sh
-```
+| Component | Version | Notes |
+|---|---|---|
+| GPU | RTX 4080 SUPER (16 GB) | WSL2, driver from the Windows host |
+| CUDA toolkit | 12.6 | `/usr/local/cuda-12.6` |
+| cuDNN | 9.10.2 | copied into `cudnn9/` |
+| ONNX Runtime | 1.27.1, cuda12 build | extracted into `onnxruntime/` |
+| Go binding | `github.com/yalue/onnxruntime_go` v1.31.0 | forked locally, see below |
+| Go | 1.26.4 | installed to `~/sdk/go` |
+| libjpeg-turbo | `libturbojpeg0-dev` | apt package |
 
-Expected tail of output:
+## Getting the native libraries
 
-```
-GPU memory used   : 0 MiB -> 406 MiB (delta +406 MiB)
-nvidia-smi compute apps:
-<pid>, [N/A]
-=== GREEN: inference executed on the CUDA execution provider (GPU). ===
-```
+1. Download `onnxruntime-linux-x64-gpu_cuda12-1.27.1.tgz` from the
+   microsoft/onnxruntime GitHub releases and extract it to `onnxruntime/`, so
+   that `onnxruntime/lib/libonnxruntime.so` exists.
+2. Put cuDNN 9's shared libraries in `cudnn9/`. The pip package
+   (`nvidia-cudnn-cu12`) is one source; copying the `.so` files out of its
+   `lib/` directory is enough.
+3. `sudo apt install libturbojpeg0-dev`.
 
-## Environment found
+`run.sh` sets `LD_LIBRARY_PATH` to pick these up in the right order:
+`onnxruntime/lib`, then `cudnn9`, then `/usr/local/cuda-12.6/lib64`, then
+`/usr/lib/wsl/lib`. Order matters: the CUDA-12 ORT build links cuDNN 9, and a
+system cuDNN 8 earlier on the path will be found first and fail to load the CUDA
+provider.
 
-| Component   | Version                              | Notes                               |
-|-------------|--------------------------------------|-------------------------------------|
-| GPU         | RTX 4080 (16 GB)                     | driver 595.97, CUDA driver br. 13.2 |
-| CUDA Toolkit| 12.6 (nvcc)                          | libs in `/usr/local/cuda-12.6`      |
-| cuDNN       | 8.9.7 system **+ 9.10.2** (pip)      | **9.x is the one we needed**        |
-| Go          | 1.26.4                               | installed to `~/sdk/go` (no sudo)   |
-| ONNX Runtime| 1.18.1 (cuda12 build)                | `onnxruntime/lib/`                  |
-| Go binding  | `github.com/yalue/onnxruntime_go` v1.11.0 | pinned — see below            |
+## Version compatibility
 
-## The two version-compatibility traps (the riskiest part, as predicted)
+The Go binding declares an ORT API version and fails against any runtime older
+than that ("API version 26 not available, only [1,18] supported"). The binding
+tag and the ORT build have to be matched: binding v1.11.0 targets ORT API 18
+(ORT 1.18.x), v1.31.0 targets API 26 (ORT 1.22+). If you change one, change the
+other.
 
-1. **Go binding ↔ ORT API version.** The binding's `@latest` (v1.31.0) targets
-   ORT API 26 and fails against ORT 1.18.1 ("API version 26 not available,
-   only [1,18] supported"). **Fix:** pin the binding to **v1.11.0**, the newest
-   release that targets ORT API 18. (See `go.mod`.)
+`go.mod` replaces the binding with `onnxruntime_go_fork/`, a local copy that
+adds a `DeviceTensor` type and CUDA memory-info accessors (about 90 lines) so
+the engine can bind its own device buffers. Everything else in that directory is
+upstream.
 
-2. **ORT cuda12 build links cuDNN 9, not cuDNN 8.** The system cuDNN is 8.9.7,
-   but `libonnxruntime_providers_cuda.so` needs `libcudnn.so.9`. **Fix:** cuDNN
-   9.10.2 already existed in a pip package; its libs are copied into `cudnn9/`
-   and put on `LD_LIBRARY_PATH`.
-
-If you ever upgrade ORT: 1.19+ also needs cuDNN 9 (fine), but you must move the
-Go binding to a matching tag (binding API version must be ≤ the ORT version).
+Known cost of the newer runtime: fp32 per-Run time is about 20% worse on ORT
+1.22 and later than on 1.18.1 for this model, measured identical on 1.22, 1.26
+and 1.27. FP16 is unaffected. Pinning ORT 1.18.1 with binding v1.11.0 restores
+the old fp32 speed but loses IoBinding.
 
 ## WSL2 notes
 
-- GPU works in WSL2 — **no need to switch to native Windows/Ubuntu.**
-- `libcuda.so` comes from the Windows driver via `/usr/lib/wsl/lib`.
-- WSL2's `nvidia-smi` reports per-process memory as `[N/A]`, so the program's
-  primary GPU proof is the **total GPU-memory delta** (0 → ~406 MiB), with the
-  PID-in-compute-apps list as a secondary check.
-- Build on the Linux filesystem (`~/go-inference-server`), **not** the
-  `/mnt/c/...` Windows mount — that path has a space and slow I/O that break
-  cgo/Go builds.
+- `libcuda.so` comes from the Windows driver through `/usr/lib/wsl/lib`.
+- `nvidia-smi` reports per-process memory as `[N/A]`, so the server proves GPU
+  placement with the total GPU-memory delta across session creation and treats
+  the compute-apps PID list as a secondary signal.
+- Build on the Linux filesystem, not under `/mnt/c`. The Windows mount is slow
+  and its paths break cgo builds.
 
-## Files
+## FP16 model
 
-- `main.go`   — the ~30-line validation (commented).
-- `run.sh`    — sets `PATH` + `LD_LIBRARY_PATH`, builds, runs.
-- `resnet18.onnx` — ResNet-18 v1-7 (ONNX model zoo).
-- `onnxruntime/`  — extracted ORT native libraries (see Phase 9 update below).
-- `cudnn9/`        — cuDNN 9 libraries the CUDA EP loads at runtime.
+`resnet18_fp16.onnx` is generated from `resnet18.onnx`:
 
-## Phase 9 update (2026-07-11): foundation upgraded
+```bash
+pip install onnx onnxconverter-common
+python3 convert_fp16.py
+```
 
-The Phase-0 pins above were deliberately retired in Phase 9 to unlock
-IoBinding (see `PHASE9_SPEC.md`). Current foundation:
+The script upgrades the opset and drops initializer-inputs before conversion;
+the comments in it explain why this specific export needs both.
 
-| Component   | Version | Source |
-|-------------|---------|--------|
-| ONNX Runtime| **1.27.1** (cuda12 build) | `onnxruntime-linux-x64-gpu_cuda12-1.27.1.tgz` from microsoft/onnxruntime GitHub releases, extracted to `onnxruntime/` |
-| Go binding  | **v1.31.0** (ORT API 26) | `go.mod` |
-| cuDNN       | 9.10.2 (unchanged) | `cudnn9/` — verified compatible via ldd |
+## Verifying the setup
 
-- The upgrade needed ZERO Go code changes (v1.11.0 API surface survived).
-- Correctness identical on both models and all three content types.
-- **Known, accepted cost:** raw fp32 inference is ~20% slower per Run
-  (6.8 → 8.2 ms/batch-32) on EVERY IoBinding-capable ORT (1.22/1.26/1.27
-  all measured identical) — not fixable by `cudnn_conv_algo_search`,
-  `use_tf32`, or cuDNN 9.24. FP16 throughput is unaffected. If you need the
-  old fp32 speed, pin ORT 1.18.1 + binding v1.11.0 (commit history has the
-  matched set; `onnxruntime.ort118/` is the local rollback dir until Phase 9
-  lands).
+```bash
+./run.sh                 # should log "model loaded on GPU (allocated +N MiB)"
+./smoke.sh               # health check plus two known-answer predictions
+./gotest.sh              # unit tests and GPU integration tests
+```
+
+If the server logs that it allocated only a few MiB of GPU memory, ORT fell back
+to CPU: the CUDA provider failed to load, almost always a cuDNN or CUDA library
+path problem.
