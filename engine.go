@@ -53,6 +53,17 @@ var numInferLanes = 1
 // creation. Set from the -cuda-opts flag before NewEngine.
 var cudaExtraOpts map[string]string
 
+// trtCacheDir, when non-empty, puts the TensorRT execution provider ahead of
+// CUDA (CUDA keeps any node TRT rejects) and caches built engines there; the
+// first start builds them (~20-60s), later starts load in under a second.
+// The engine always allows fp16 kernels; trtInt8 also enables int8, which is
+// how a QDQ model (quantize_int8.py) gets real int8 kernels. Set from the
+// -trt / -trt-int8 flags before NewEngine.
+var (
+	trtCacheDir string
+	trtInt8     bool
+)
+
 // useIoBinding switches full batches to pre-bound fixed-shape I/O tensors via
 // ORT IoBinding: no per-batch NewTensor/Destroy and no ORT-side output
 // allocation per Run. Partial (tail) batches always take the plain Run path, so
@@ -362,6 +373,12 @@ func NewEngine(modelPath, libPath string, labels []string, maxBatch int, maxWait
 	if err != nil {
 		return nil, fmt.Errorf("create session options: %w", err)
 	}
+	if trtCacheDir != "" {
+		if err := e.appendTensorRT(); err != nil {
+			e.Close()
+			return nil, err
+		}
+	}
 	e.cudaOpts, err = ort.NewCUDAProviderOptions()
 	if err != nil {
 		e.Close()
@@ -568,6 +585,45 @@ func (e *Engine) collect() {
 		default:
 		}
 	}
+}
+
+// appendTensorRT registers the TensorRT execution provider on e.options. The
+// optimization profile spans batch 1..maxBatch so partial batches reuse the
+// same engine instead of triggering a rebuild.
+//
+// ORT graph optimizations are turned off for TRT sessions: TensorRT fuses the
+// graph itself, and ORT's WeightBiasQuantization pass rewrites a QDQ model's
+// float conv biases into int32 DequantizeLinear nodes, which TensorRT rejects
+// ("only activation datatypes allowed"), splitting the graph off TRT.
+func (e *Engine) appendTensorRT() error {
+	if err := e.options.SetGraphOptimizationLevel(ort.GraphOptimizationLevelDisableAll); err != nil {
+		return fmt.Errorf("disable graph optimizations: %w", err)
+	}
+	opts, err := ort.NewTensorRTProviderOptions()
+	if err != nil {
+		return fmt.Errorf("create TensorRT provider options: %w", err)
+	}
+	defer opts.Destroy()
+	shape := func(n int) string { return fmt.Sprintf("%s:%dx%dx%dx%d", e.inName, n, channels, imageSize, imageSize) }
+	err = opts.Update(map[string]string{
+		"device_id":               "0",
+		"trt_fp16_enable":         "1",
+		"trt_int8_enable":         map[bool]string{false: "0", true: "1"}[trtInt8],
+		"trt_engine_cache_enable": "1",
+		"trt_engine_cache_path":   trtCacheDir,
+		"trt_timing_cache_enable": "1",
+		"trt_timing_cache_path":   trtCacheDir,
+		"trt_profile_min_shapes":  shape(1),
+		"trt_profile_opt_shapes":  shape(e.maxBatch),
+		"trt_profile_max_shapes":  shape(e.maxBatch),
+	})
+	if err != nil {
+		return fmt.Errorf("configure TensorRT provider: %w", err)
+	}
+	if err := e.options.AppendExecutionProviderTensorRT(opts); err != nil {
+		return fmt.Errorf("enable TensorRT execution provider: %w", err)
+	}
+	return nil
 }
 
 // newBindingSlot creates one pre-bound I/O set for the -io-binding path.

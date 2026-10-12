@@ -65,6 +65,8 @@ func main() {
 	cudaOptsFlag := flag.String("cuda-opts", "", "extra CUDA execution-provider options as k=v[,k=v...], e.g. cudnn_conv_algo_search=EXHAUSTIVE")
 	ioBinding := flag.Bool("io-binding", false, "run full batches through pre-bound fixed-shape I/O tensors (ORT IoBinding): skips per-batch tensor create/destroy and output allocation")
 	deviceBinding := flag.Bool("device-binding", false, "run full batches through device-resident pre-bound I/O with pinned-host staging: engine-owned cudaMalloc buffers, H2D/D2H under engine control; takes precedence over -io-binding")
+	trt := flag.String("trt", "", "run the model through the TensorRT execution provider (fp16 allowed), caching built engines in this directory; needs TensorRT 10 on LD_LIBRARY_PATH and a model whose weights are initializers, not graph inputs (e.g. resnet18_op13.onnx or resnet18_int8.onnx)")
+	trtInt8Flag := flag.Bool("trt-int8", false, "with -trt: also allow int8 kernels; use with a QDQ model from quantize_int8.py")
 	flag.Parse()
 
 	labels, err := loadLabels(*labelsPath)
@@ -78,6 +80,10 @@ func main() {
 	numInferLanes = *inferLanes // must be set before NewEngine spawns the pipeline
 	useIoBinding = *ioBinding
 	useDeviceBinding = *deviceBinding
+	trtCacheDir, trtInt8 = *trt, *trtInt8Flag
+	if trtCacheDir != "" {
+		log.Printf("TensorRT execution provider enabled (int8=%v, engine cache %s); first start builds engines", trtInt8, trtCacheDir)
+	}
 	if *cudaOptsFlag != "" {
 		cudaExtraOpts = map[string]string{}
 		for _, kv := range strings.Split(*cudaOptsFlag, ",") {
