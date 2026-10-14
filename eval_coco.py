@@ -45,6 +45,8 @@ while True:
         break
 
 ev = COCOeval(coco, coco.loadRes(dets), "bbox")
+# score only the images in the folder so subsets of val2017 work
+ev.params.imgIds = sorted(int(os.path.splitext(f)[0]) for f in os.listdir(images) if f.endswith(".jpg"))
 ev.evaluate()
 ev.accumulate()
 ev.summarize()

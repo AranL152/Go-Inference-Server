@@ -111,6 +111,11 @@ Accuracy through the full Go pipeline is 40.4 COCO mAP (0.5:0.95) on val2017
 for both FP32 and TensorRT FP16, against 40.5 published for YOLOX-S. Measure it
 with `eval_coco.py` against a server started with `-conf 0.001 -iou 0.65`.
 
+TensorRT INT8 (`quantize_yolox.py`, Conv-only QDQ, MinMax calibration on 512
+val2017 images, scored on the other 4,488) was tried and not adopted: 38.7 mAP
+against 40.4 for FP16 on the same images, and 1,234 against 1,228 images/s,
+because the GPU is not the bottleneck here.
+
 The UI is adapted from [ToyReduce](https://github.com/JasonLovesDoggo/toyreduce)
 by Jason Cameron, used with permission. Rebuild it with `cd ui && pnpm install && pnpm run publish`.
 
