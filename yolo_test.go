@@ -2,7 +2,10 @@ package main
 
 import (
 	"image"
+	"math"
+	"os"
 	"testing"
+	"time"
 )
 
 func yoloRow(boxes [][6]float32, numCls int) []float32 {
@@ -61,5 +64,65 @@ func TestLetterboxIntoPadsAndSwapsChannels(t *testing.T) {
 	last := plane - 1
 	if out[last] != letterboxPad {
 		t.Errorf("padding %v", out[last])
+	}
+}
+
+func TestYOLOEngineMatchesReference(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping GPU integration test in -short mode")
+	}
+	labels, _ := loadLabels("coco_classes.txt")
+	e, err := NewEngine("yolox_s.onnx", "onnxruntime/lib/libonnxruntime.so", labels, 4, 2*time.Millisecond)
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+	defer e.Close()
+	if !e.Detector() || e.InputElems() != 3*letterboxSize*letterboxSize {
+		t.Fatalf("detector %v input %d", e.Detector(), e.InputElems())
+	}
+	pool, err := newCPUDecoderPool(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	jpeg, err := os.ReadFile("testdata/street.jpg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	in, lb, err := pool.PreprocessLetterbox(jpeg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pred, err := e.Predict(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lb.toOriginal(pred.Detections)
+
+	// python onnxruntime reference with cv2 letterbox
+	want := []struct {
+		name string
+		conf float64
+		box  [4]float32
+	}{
+		{"bicycle", 0.955, [4]float32{125, 119, 560, 421}},
+		{"dog", 0.913, [4]float32{134, 223, 310, 550}},
+		{"truck", 0.612, [4]float32{463, 77, 694, 172}},
+	}
+	for i, w := range want {
+		if i >= len(pred.Detections) {
+			t.Fatalf("only %d detections %+v", len(pred.Detections), pred.Detections)
+		}
+		d := pred.Detections[i]
+		t.Logf("%s %.3f %v", d.ClassName, d.Confidence, d.Box)
+		if d.ClassName != w.name || math.Abs(d.Confidence-w.conf) > 0.05 {
+			t.Errorf("detection %d got %s %.3f want %s %.3f", i, d.ClassName, d.Confidence, w.name, w.conf)
+		}
+		for k := range d.Box {
+			if math.Abs(float64(d.Box[k]-w.box[k])) > 8 {
+				t.Errorf("%s box %v want %v", w.name, d.Box, w.box)
+				break
+			}
+		}
 	}
 }

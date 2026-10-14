@@ -130,6 +130,7 @@ type Prediction struct {
 	ClassIndex int
 	ClassName  string
 	Confidence float64
+	Detections []Detection // detector models only in model input pixels
 }
 
 // batchResult is delivered back to a single waiting caller.
@@ -193,6 +194,13 @@ type Engine struct {
 	labels  []string // ImageNet class names, index-aligned; may be nil
 	inName  string
 	outName string
+
+	// model geometry read from the ONNX file
+	inDims   []int64 // C H W
+	outDims  []int64 // per image output shape
+	inElems  int
+	outElems int
+	detect   bool
 
 	// IoBinding slot pool (-io-binding). nil when disabled.
 	// slotPool circulates slots gather -> infer -> unpack -> back; slots keeps
@@ -354,10 +362,19 @@ func NewEngine(modelPath, libPath string, labels []string, maxBatch int, maxWait
 	if err != nil {
 		return nil, fmt.Errorf("read model I/O info: %w", err)
 	}
+	inD, outD := ins[0].Dimensions, outs[0].Dimensions
+	if len(inD) != 4 || len(outD) < 2 {
+		return nil, fmt.Errorf("unsupported model shapes in %v out %v", inD, outD)
+	}
 	e := &Engine{
 		labels:   labels,
 		inName:   ins[0].Name,
 		outName:  outs[0].Name,
+		inDims:   inD[1:],
+		outDims:  outD[1:],
+		inElems:  int(inD[1] * inD[2] * inD[3]),
+		outElems: 1,
+		detect:   len(outD) == 3,
 		maxBatch: maxBatch,
 		maxWait:  maxWait,
 		submitCh: make(chan *batchRequest, maxBatch*4),
@@ -366,7 +383,13 @@ func NewEngine(modelPath, libPath string, labels []string, maxBatch int, maxWait
 		stopCh:   make(chan struct{}),
 		doneCh:   make(chan struct{}),
 	}
-	e.batchBufPool.New = func() any { return make([]float32, maxBatch*inputElems) }
+	for _, d := range e.outDims {
+		e.outElems *= int(d)
+	}
+	if e.inElems <= 0 || e.outElems <= 0 {
+		return nil, fmt.Errorf("model needs fixed non batch dims in %v out %v", inD, outD)
+	}
+	e.batchBufPool.New = func() any { return make([]float32, maxBatch*e.inElems) }
 
 	// CUDA execution provider — the line that puts work on the RTX 4080.
 	e.options, err = ort.NewSessionOptions()
@@ -416,7 +439,7 @@ func NewEngine(modelPath, libPath string, labels []string, maxBatch int, maxWait
 	// once; the engine does its own pinned-host H2D/D2H, ORT computes against
 	// fixed device addresses. Wins over -io-binding when both are set.
 	if useDeviceBinding {
-		e.logitsPool.New = func() any { return make([]float32, maxBatch*numClass) }
+		e.logitsPool.New = func() any { return make([]float32, maxBatch*e.outElems) }
 		e.devSlotPool = make(chan *deviceSlot, numBindingSlots)
 		for i := 0; i < numBindingSlots; i++ {
 			slot, err := e.newDeviceSlot()
@@ -524,8 +547,8 @@ func (e *Engine) Release() {
 // it itself: tests share one tensor across many concurrent Predicts, and pooling
 // a slice that other calls still read would corrupt batches.
 func (e *Engine) Predict(input []float32) (Prediction, error) {
-	if len(input) != inputElems {
-		return Prediction{}, fmt.Errorf("input length %d, want %d", len(input), inputElems)
+	if len(input) != e.inElems {
+		return Prediction{}, fmt.Errorf("input length %d, want %d", len(input), e.inElems)
 	}
 
 	req := &batchRequest{input: input, resultCh: make(chan batchResult, 1), submitT: time.Now()}
@@ -604,7 +627,9 @@ func (e *Engine) appendTensorRT() error {
 		return fmt.Errorf("create TensorRT provider options: %w", err)
 	}
 	defer opts.Destroy()
-	shape := func(n int) string { return fmt.Sprintf("%s:%dx%dx%dx%d", e.inName, n, channels, imageSize, imageSize) }
+	shape := func(n int) string {
+		return fmt.Sprintf("%s:%dx%dx%dx%d", e.inName, n, e.inDims[0], e.inDims[1], e.inDims[2])
+	}
 	err = opts.Update(map[string]string{
 		"device_id":               "0",
 		"trt_fp16_enable":         "1",
@@ -629,11 +654,11 @@ func (e *Engine) appendTensorRT() error {
 // newBindingSlot creates one pre-bound I/O set for the -io-binding path.
 func (e *Engine) newBindingSlot() (*bindingSlot, error) {
 	in, err := ort.NewEmptyTensor[float32](
-		ort.NewShape(int64(e.maxBatch), channels, imageSize, imageSize))
+		e.inShape(e.maxBatch))
 	if err != nil {
 		return nil, fmt.Errorf("input tensor: %w", err)
 	}
-	out, err := ort.NewEmptyTensor[float32](ort.NewShape(int64(e.maxBatch), numClass))
+	out, err := ort.NewEmptyTensor[float32](e.outShape(e.maxBatch))
 	if err != nil {
 		in.Destroy()
 		return nil, fmt.Errorf("output tensor: %w", err)
@@ -660,8 +685,8 @@ func (e *Engine) newBindingSlot() (*bindingSlot, error) {
 // -device-binding path: device input/output buffers, pinned host staging,
 // and an IoBinding tying the device tensors to the session.
 func (e *Engine) newDeviceSlot() (s *deviceSlot, err error) {
-	inBytes := e.maxBatch * inputElems * 4
-	outBytes := e.maxBatch * numClass * 4
+	inBytes := e.maxBatch * e.inElems * 4
+	outBytes := e.maxBatch * e.outElems * 4
 	s = &deviceSlot{}
 	defer func() {
 		if err != nil {
@@ -677,15 +702,15 @@ func (e *Engine) newDeviceSlot() (s *deviceSlot, err error) {
 	if s.stagePtr, err = cudaHostAlloc(inBytes); err != nil {
 		return nil, err
 	}
-	s.stage = unsafe.Slice((*float32)(s.stagePtr), e.maxBatch*inputElems)
+	s.stage = unsafe.Slice((*float32)(s.stagePtr), e.maxBatch*e.inElems)
 	s.in, err = ort.NewCudaFloat32Tensor(
-		ort.NewShape(int64(e.maxBatch), channels, imageSize, imageSize),
+		e.inShape(e.maxBatch),
 		s.devIn, uintptr(inBytes), 0)
 	if err != nil {
 		return nil, fmt.Errorf("device input tensor: %w", err)
 	}
 	s.out, err = ort.NewCudaFloat32Tensor(
-		ort.NewShape(int64(e.maxBatch), numClass), s.devOut, uintptr(outBytes), 0)
+		e.outShape(e.maxBatch), s.devOut, uintptr(outBytes), 0)
 	if err != nil {
 		return nil, fmt.Errorf("device output tensor: %w", err)
 	}
@@ -740,7 +765,7 @@ func (e *Engine) packAndSend(batch []*batchRequest) {
 		// host staging; the lane does the H2D copy itself.
 		slot := <-e.devSlotPool
 		for i, r := range batch {
-			copy(slot.stage[i*inputElems:(i+1)*inputElems], r.input)
+			copy(slot.stage[i*e.inElems:(i+1)*e.inElems], r.input)
 			r.input = nil
 		}
 		e.inferCh <- &packedBatch{dslot: slot, batch: batch}
@@ -752,19 +777,19 @@ func (e *Engine) packAndSend(batch []*batchRequest) {
 		// as the inferCh send below; slots return as unpack workers finish.
 		slot := <-e.slotPool
 		for i, r := range batch {
-			copy(slot.inData[i*inputElems:(i+1)*inputElems], r.input)
+			copy(slot.inData[i*e.inElems:(i+1)*e.inElems], r.input)
 			r.input = nil
 		}
 		e.inferCh <- &packedBatch{slot: slot, batch: batch}
 		return
 	}
 	raw := e.batchBufPool.Get().([]float32)
-	data := raw[:n*inputElems] // NewTensor requires the exact batch length
+	data := raw[:n*e.inElems] // NewTensor requires the exact batch length
 	for i, r := range batch {
-		copy(data[i*inputElems:(i+1)*inputElems], r.input)
+		copy(data[i*e.inElems:(i+1)*e.inElems], r.input)
 		r.input = nil // engine is done with the caller's tensor after this copy
 	}
-	inT, err := ort.NewTensor(ort.NewShape(int64(n), channels, imageSize, imageSize), data)
+	inT, err := ort.NewTensor(e.inShape(n), data)
 	if err != nil {
 		e.batchBufPool.Put(raw)
 		failBatch(batch, fmt.Errorf("create input tensor: %w", err))
@@ -814,7 +839,7 @@ func (e *Engine) inferLoop() {
 			// staleness of CPU-backed bound inputs applies.
 			s := pb.dslot
 			runT := time.Now()
-			runErr := cudaMemcpyH2D(s.devIn, s.stagePtr, n*inputElems*4)
+			runErr := cudaMemcpyH2D(s.devIn, s.stagePtr, n*e.inElems*4)
 			if runErr == nil {
 				runErr = e.session.RunWithBinding(s.binding)
 			}
@@ -822,7 +847,7 @@ func (e *Engine) inferLoop() {
 			if runErr == nil {
 				logits = e.logitsPool.Get().([]float32)
 				runErr = cudaMemcpyD2H(unsafe.Pointer(&logits[0]), s.devOut,
-					n*numClass*4)
+					n*e.outElems*4)
 				if runErr != nil {
 					e.logitsPool.Put(logits)
 				}
@@ -937,11 +962,17 @@ func (e *Engine) unpackLoop() {
 		if ib.logits != nil {
 			// -device-binding: lane-copied host logits; pooled slice is
 			// [maxBatch*numClass], slice to the (always-full) batch.
-			logits = ib.logits[:len(ib.batch)*numClass]
+			logits = ib.logits[:len(ib.batch)*e.outElems]
 		} else {
 			logits = ib.outT.GetData() // length n*numClass, row-major [N,1000]
 		}
-		preds, err := splitBatchLogits(logits, len(ib.batch), e.labels)
+		var preds []Prediction
+		var err error
+		if e.detect {
+			preds, err = e.splitDetections(logits, len(ib.batch))
+		} else {
+			preds, err = splitBatchLogits(logits, len(ib.batch), e.labels)
+		}
 		if ib.logits != nil {
 			e.logitsPool.Put(ib.logits)
 		} else {
@@ -989,6 +1020,39 @@ func splitBatchLogits(logits []float32, n int, labels []string) ([]Prediction, e
 	}
 	return preds, nil
 }
+
+// detection thresholds set from flags before serving
+var (
+	detConfThresh float32 = 0.3
+	detIoUThresh  float32 = 0.45
+)
+
+func (e *Engine) splitDetections(out []float32, n int) ([]Prediction, error) {
+	if len(out) != n*e.outElems {
+		return nil, fmt.Errorf("output length %d want %d", len(out), n*e.outElems)
+	}
+	numCls := int(e.outDims[len(e.outDims)-1]) - 5
+	preds := make([]Prediction, n)
+	for i := range preds {
+		row := out[i*e.outElems : (i+1)*e.outElems]
+		preds[i].Detections = decodeDetections(row, numCls, e.labels, detConfThresh, detIoUThresh)
+	}
+	return preds, nil
+}
+
+func (e *Engine) inShape(n int) ort.Shape {
+	return ort.NewShape(append([]int64{int64(n)}, e.inDims...)...)
+}
+
+func (e *Engine) outShape(n int) ort.Shape {
+	return ort.NewShape(append([]int64{int64(n)}, e.outDims...)...)
+}
+
+// InputElems is the per image input length the model expects
+func (e *Engine) InputElems() int { return e.inElems }
+
+// Detector reports whether the model outputs boxes rather than class scores
+func (e *Engine) Detector() bool { return e.detect }
 
 // failBatch delivers the same error to every request in a failed batch.
 func failBatch(batch []*batchRequest, err error) {
