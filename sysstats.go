@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -61,6 +62,14 @@ type sysSample struct {
 	LaneBusy   float64    `json:"lane_busy"`
 	P50Ms      float64    `json:"p50_ms"`
 	P99Ms      float64    `json:"p99_ms"`
+
+	// where the time goes per image for decode and letterbox and per batch for the GPU stages
+	DecodeMs    float64 `json:"decode_ms"`
+	LetterboxMs float64 `json:"letterbox_ms"`
+	H2DMs       float64 `json:"h2d_ms"`
+	ComputeMs   float64 `json:"compute_ms"`
+	D2HMs       float64 `json:"d2h_ms"`
+	PostMs      float64 `json:"post_ms"`
 }
 
 // latencyWindow collects request latencies between samples
@@ -93,12 +102,13 @@ func (l *latencyWindow) drain() (p50, p99 float64) {
 
 type sysMonitor struct {
 	engine *Engine
+	pool   *cpuDecoderPool
 	mu     sync.Mutex
 	ring   []sysSample
 }
 
-func startSysMonitor(e *Engine) *sysMonitor {
-	m := &sysMonitor{engine: e}
+func startSysMonitor(e *Engine, pool *cpuDecoderPool) *sysMonitor {
+	m := &sysMonitor{engine: e, pool: pool}
 	go m.sample()
 	return m
 }
@@ -182,6 +192,8 @@ func (m *sysMonitor) sample() {
 	prevCPU := readCPUTimes()
 	prevTicks, _ := readProc()
 	pb, pr, _, pw, pn, _, pbusy, pidle := m.engine.CumulativeStats()
+	ph, pc, pd, pp := m.engine.StageNs()
+	pdec, pnorm, pcnt := m.decodeNs()
 	prevT := time.Now()
 	for range time.Tick(sampleEvery) {
 		now := time.Now()
@@ -214,6 +226,18 @@ func (m *sysMonitor) sample() {
 			s.QueueMs = float64(max(w-pw, 0)) / float64(dr) / 1e6
 		}
 		s.LaneBusy = pct(float64(max(busy-pbusy, 0)), float64(max(busy-pbusy, 0)+max(idle-pidle, 0)))
+		h, c, d2h, post := m.engine.StageNs()
+		if db > 0 {
+			per := func(cur, prev int64) float64 { return float64(max(cur-prev, 0)) / float64(db) / 1e6 }
+			s.H2DMs, s.ComputeMs, s.D2HMs, s.PostMs = per(h, ph), per(c, pc), per(d2h, pd), per(post, pp)
+		}
+		ph, pc, pd, pp = h, c, d2h, post
+		dec, norm, cnt := m.decodeNs()
+		if dn := cnt - pcnt; dn > 0 {
+			s.DecodeMs = float64(max(dec-pdec, 0)) / float64(dn) / 1e6
+			s.LetterboxMs = float64(max(norm-pnorm, 0)) / float64(dn) / 1e6
+		}
+		pdec, pnorm, pcnt = dec, norm, cnt
 		pb, pr, pw, pn, pbusy, pidle = b, r, w, n, busy, idle
 		s.P50Ms, s.P99Ms = recentLatency.drain()
 		prevT = now
@@ -228,6 +252,13 @@ func (m *sysMonitor) sample() {
 		}
 		m.mu.Unlock()
 	}
+}
+
+func (m *sysMonitor) decodeNs() (decode, norm, count int64) {
+	if m.pool == nil {
+		return
+	}
+	return atomic.LoadInt64(&m.pool.statDecodeNs), atomic.LoadInt64(&m.pool.statNormNs), atomic.LoadInt64(&m.pool.statCount)
 }
 
 // handleSystem returns samples newer than the since query param in unix ms

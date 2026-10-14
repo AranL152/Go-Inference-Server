@@ -42,16 +42,6 @@ func chooseScaleLong(w, h, target int) (num, den int) {
 	return 1, 1
 }
 
-// DecodeLetterbox decodes jpeg into out as 3x640x640 BGR planes
-func (d *jpegDecoder) DecodeLetterbox(jpeg []byte, out []byte) (Letterbox, error) {
-	img, fw, fh, err := d.decodeFitLong(jpeg, letterboxSize)
-	if err != nil {
-		return Letterbox{}, err
-	}
-	r := letterboxInto(img, out)
-	return Letterbox{Scale: r * float32(img.Rect.Dx()) / float32(fw), W: fw, H: fh}, nil
-}
-
 // letterboxInto resizes img to fit 640x640 at the top left and pads the rest
 func letterboxInto(img *image.RGBA, out []byte) float32 {
 	sw, sh := img.Rect.Dx(), img.Rect.Dy()
@@ -115,15 +105,17 @@ func (p *cpuDecoderPool) PreprocessLetterbox(jpeg []byte) ([]byte, Letterbox, er
 	d := <-p.free
 	defer func() { p.free <- d }()
 	t := time.Now()
-	out := letterboxPool.Get().([]byte)
-	lb, err := d.DecodeLetterbox(jpeg, out)
+	img, fw, fh, err := d.decodeFitLong(jpeg, letterboxSize)
 	if err != nil {
-		letterboxPool.Put(out)
 		return nil, Letterbox{}, err
 	}
-	atomic.AddInt64(&p.statDecodeNs, int64(time.Since(t)))
+	t2 := time.Now()
+	out := letterboxPool.Get().([]byte)
+	r := letterboxInto(img, out)
+	atomic.AddInt64(&p.statDecodeNs, int64(t2.Sub(t)))
+	atomic.AddInt64(&p.statNormNs, int64(time.Since(t2)))
 	atomic.AddInt64(&p.statCount, 1)
-	return out, lb, nil
+	return out, Letterbox{Scale: r * float32(img.Rect.Dx()) / float32(fw), W: fw, H: fh}, nil
 }
 
 // decodeDetections turns one 8400 x (5+classes) YOLOX row into NMS filtered boxes in model pixels

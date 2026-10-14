@@ -256,6 +256,9 @@ type Engine struct {
 	statWaitNs     int64
 	statRunNs      int64
 	statRunBatchNs int64
+
+	// per batch stage split for the dashboard
+	statH2DNs, statComputeNs, statD2HNs, statPostNs int64
 	statBusyNs     int64
 	statIdleNs     int64
 
@@ -874,9 +877,13 @@ func (e *Engine) inferLoop() {
 			s := pb.dslot
 			runT := time.Now()
 			runErr := cudaMemcpyH2D(s.devIn, s.stagePtr, n*e.inBytes)
+			computeT := time.Now()
+			atomic.AddInt64(&e.statH2DNs, int64(computeT.Sub(runT)))
 			if runErr == nil {
 				runErr = e.session.RunWithBinding(s.binding)
 			}
+			d2hT := time.Now()
+			atomic.AddInt64(&e.statComputeNs, int64(d2hT.Sub(computeT)))
 			var logits []float32
 			if runErr == nil {
 				logits = e.logitsPool.Get().([]float32)
@@ -886,6 +893,7 @@ func (e *Engine) inferLoop() {
 					e.logitsPool.Put(logits)
 				}
 			}
+			atomic.AddInt64(&e.statD2HNs, int64(time.Since(d2hT)))
 			atomic.AddInt64(&e.statRunNs, int64(time.Since(runT)))
 			e.devSlotPool <- s
 			if runErr != nil {
@@ -919,6 +927,7 @@ func (e *Engine) inferLoop() {
 				runErr = e.session.RunWithBinding(pb.slot.binding)
 			}
 			atomic.AddInt64(&e.statRunNs, int64(time.Since(runT)))
+			atomic.AddInt64(&e.statComputeNs, int64(time.Since(runT)))
 			if runErr != nil {
 				e.slotPool <- pb.slot
 				failBatch(pb.batch, fmt.Errorf("inference run (bound): %w", runErr))
@@ -962,6 +971,7 @@ func (e *Engine) inferLoop() {
 		runT := time.Now()
 		runErr := e.session.Run([]ort.Value{pb.inT}, outputs)
 		atomic.AddInt64(&e.statRunNs, int64(time.Since(runT)))
+		atomic.AddInt64(&e.statComputeNs, int64(time.Since(runT)))
 		pb.inT.Destroy()
 		e.batchBufPool.Put(pb.raw) // safe once the OrtValue no longer pins it
 		if runErr != nil {
@@ -1002,11 +1012,13 @@ func (e *Engine) unpackLoop() {
 		}
 		var preds []Prediction
 		var err error
+		postT := time.Now()
 		if e.detect {
 			preds, err = e.splitDetections(logits, len(ib.batch))
 		} else {
 			preds, err = splitBatchLogits(logits, len(ib.batch), e.labels)
 		}
+		atomic.AddInt64(&e.statPostNs, int64(time.Since(postT)))
 		if ib.logits != nil {
 			e.logitsPool.Put(ib.logits)
 		} else {
@@ -1084,6 +1096,12 @@ func (e *Engine) outShape(n int) ort.Shape {
 
 // InputElems is the per image input length the model expects
 func (e *Engine) InputElems() int { return e.inElems }
+
+// StageNs returns cumulative per batch nanoseconds for host to device copy GPU compute device to host copy and output decoding
+func (e *Engine) StageNs() (h2d, compute, d2h, post int64) {
+	return atomic.LoadInt64(&e.statH2DNs), atomic.LoadInt64(&e.statComputeNs),
+		atomic.LoadInt64(&e.statD2HNs), atomic.LoadInt64(&e.statPostNs)
+}
 
 // InputU8 reports whether the model takes uint8 input through PredictBytes
 func (e *Engine) InputU8() bool { return e.inU8 }
