@@ -16,7 +16,7 @@ import (
 
 const (
 	sampleEvery   = time.Second
-	sampleHistory = 120
+	sampleHistory = 900
 )
 
 type gpuSample struct {

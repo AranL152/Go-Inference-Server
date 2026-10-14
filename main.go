@@ -72,6 +72,7 @@ func main() {
 	iouFlag := flag.Float64("iou", 0.45, "detector NMS IoU threshold")
 	trtInt8Flag := flag.Bool("trt-int8", false, "with -trt: also allow int8 kernels; use with a QDQ model from quantize_int8.py")
 	flag.Parse()
+	captureLogs()
 
 	detConfThresh, detIoUThresh = float32(*confFlag), float32(*iouFlag)
 	if *labelsPath == "" {
@@ -192,6 +193,7 @@ func main() {
 	jobs.routes(mux)
 	mux.HandleFunc("GET /api/system", startSysMonitor(engine, cpuPool).handleSystem)
 	mux.HandleFunc("POST /debug/cuda-profiler/{action}", handleCudaProfiler)
+	mux.HandleFunc("GET /api/logs", serverLogs.handleLogs)
 	mux.HandleFunc("GET /api/profiles", handleProfiles)
 	mux.Handle("/", uiHandler())
 	// net/http/pprof registers on the default mux; expose it through ours so
