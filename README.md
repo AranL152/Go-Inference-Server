@@ -107,6 +107,10 @@ inference, NMS):
 | + 3 infer lanes, 256 job workers | 996 |
 | + letterbox column tables and a no-resize fast path | 1,173 |
 
+Accuracy through the full Go pipeline is 40.4 COCO mAP (0.5:0.95) on val2017
+for both FP32 and TensorRT FP16, against 40.5 published for YOLOX-S. Measure it
+with `eval_coco.py` against a server started with `-conf 0.001 -iou 0.65`.
+
 The UI is adapted from [ToyReduce](https://github.com/JasonLovesDoggo/toyreduce)
 by Jason Cameron, used with permission. Rebuild it with `cd ui && pnpm install && pnpm run publish`.
 
