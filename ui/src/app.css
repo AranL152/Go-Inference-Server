@@ -17,6 +17,16 @@
 	--surface: #ffffff;
 	--series: var(--accent);
 	--series-2: #e8590c;
+	--cat-1: #2a78d6;
+	--cat-2: #eb6834;
+	--cat-3: #1baf7a;
+	--cat-4: #eda100;
+	--cat-5: #e87ba4;
+	--cat-6: #008300;
+	--cat-7: #6250d6;
+	--status-good: #0ca30c;
+	--status-warning: #fab219;
+	--status-critical: #d03b3b;
 
 	font-family:
 		-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Helvetica Neue', 'Segoe UI', sans-serif;
@@ -32,6 +42,13 @@
 	--surface: #2c2c2e;
 	--series: #6f88ff;
 	--series-2: #d95926;
+	--cat-1: #3987e5;
+	--cat-2: #d95926;
+	--cat-3: #199e70;
+	--cat-4: #c98500;
+	--cat-5: #d55181;
+	--cat-6: #008300;
+	--cat-7: #9085e9;
 }
 
 body {
