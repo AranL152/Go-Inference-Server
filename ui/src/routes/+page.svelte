@@ -6,6 +6,7 @@
 	import DatasetForm from '$lib/components/DatasetForm.svelte';
 	import JobList from '$lib/components/JobList.svelte';
 	import ResultsView from '$lib/components/ResultsView.svelte';
+	import PerformanceView from '$lib/components/PerformanceView.svelte';
 
 	type Tab = 'detect' | 'results' | 'performance';
 	const tabs: Tab[] = ['detect', 'results', 'performance'];
@@ -84,6 +85,6 @@
 	{:else if activeTab === 'results'}
 		<ResultsView {jobs} jobId={selectedJob} onSelectJob={(id) => setTab('results', id)} />
 	{:else}
-		<p class="text-sm text-[var(--text-muted)]">Performance</p>
+		<PerformanceView />
 	{/if}
 </div>
