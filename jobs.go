@@ -199,7 +199,9 @@ func (st *jobStore) process(j *job, i int) {
 	data, err := os.ReadFile(j.files[i])
 	if err == nil {
 		var res detectResponse
+		t := time.Now()
 		res, err = st.s.detect(data)
+		recentLatency.add(time.Since(t))
 		r.Width, r.Height = res.Width, res.Height
 		for _, d := range res.Detections {
 			if len(j.want) == 0 || j.want[d.ClassIndex] {

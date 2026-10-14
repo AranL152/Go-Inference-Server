@@ -84,7 +84,9 @@ func instrument(m *requestMetrics, h http.HandlerFunc) http.HandlerFunc {
 		rec := &statusRecorder{ResponseWriter: w, code: http.StatusOK}
 		start := time.Now()
 		h(rec, r)
-		m.record(rec.code, time.Since(start))
+		d := time.Since(start)
+		m.record(rec.code, d)
+		recentLatency.add(d)
 	}
 }
 
