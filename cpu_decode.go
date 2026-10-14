@@ -207,6 +207,22 @@ func (d *jpegDecoder) decodeScaled(src *C.uchar, n C.ulong, num, den int) (*imag
 	}, nil
 }
 
+// decodeFitLong decodes with the longer side at or above target and returns the full size too
+func (d *jpegDecoder) decodeFitLong(jpeg []byte, target int) (img *image.RGBA, fw, fh int, err error) {
+	if len(jpeg) == 0 {
+		return nil, 0, 0, fmt.Errorf("empty jpeg input")
+	}
+	src := (*C.uchar)(unsafe.Pointer(&jpeg[0]))
+	n := C.ulong(len(jpeg))
+	var w, h C.int
+	if rc := C.tj_dims(d.h, src, n, 1, 1, &w, &h); rc != 0 {
+		return nil, 0, 0, fmt.Errorf("tj header read failed (rc=%d)", int(rc))
+	}
+	num, den := chooseScaleLong(int(w), int(h), target)
+	img, err = d.decodeScaled(src, n, num, den)
+	return img, int(w), int(h), err
+}
+
 // DecodeRGBAScale decodes at an explicit DCT scale (for benchmarks/diagnostics).
 func (d *jpegDecoder) DecodeRGBAScale(jpeg []byte, num, den int) (*image.RGBA, error) {
 	if len(jpeg) == 0 {
