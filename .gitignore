@@ -20,3 +20,6 @@
 
 # Saved detection jobs and uploads
 /jobs/
+
+# Nsight Compute reports (open with ncu-ui) are large so only the JSON summaries are kept
+/profiles/*.ncu-rep

@@ -191,6 +191,8 @@ func main() {
 	}
 	jobs.routes(mux)
 	mux.HandleFunc("GET /api/system", startSysMonitor(engine, cpuPool).handleSystem)
+	mux.HandleFunc("POST /debug/cuda-profiler/{action}", handleCudaProfiler)
+	mux.HandleFunc("GET /api/profiles", handleProfiles)
 	mux.Handle("/", uiHandler())
 	// net/http/pprof registers on the default mux; expose it through ours so
 	// `go tool pprof http://.../debug/pprof/{profile,allocs}` works.

@@ -1,0 +1,132 @@
+{
+ "model": "yolox_s_u8.onnx",
+ "batches": 1,
+ "kernels_per_batch": 140,
+ "gpu_ms_per_batch": 6.196,
+ "sm_throughput_pct": 51.5,
+ "memory_throughput_pct": 61.2,
+ "occupancy_pct": 29.2,
+ "tensor_active_pct": 43.3,
+ "top_kernels": [
+  {
+   "name": "sm80_xmma_fprop_implicit_gemm_f16f16_f16f16_f16_nhwckrsc_nhwc_tilesize12",
+   "calls": 40,
+   "ms_per_batch": 2.169,
+   "share_pct": 35.0,
+   "sm_pct": 46.4,
+   "memory_pct": 53.9,
+   "occupancy_pct": 10.6,
+   "tensor_pct": 52.6
+  },
+  {
+   "name": "sm80_xmma_fprop_implicit_gemm_f16f16_f16f16_f16_nhwckrsc_nhwc_tilesize25",
+   "calls": 13,
+   "ms_per_batch": 1.417,
+   "share_pct": 22.9,
+   "sm_pct": 52.5,
+   "memory_pct": 56.6,
+   "occupancy_pct": 12.1,
+   "tensor_pct": 55.5
+  },
+  {
+   "name": "sm75_xmma_fprop_implicit_gemm_f16f16_f16f16_f16_nhwckrsc_nhwc_tilesize12",
+   "calls": 10,
+   "ms_per_batch": 0.851,
+   "share_pct": 13.7,
+   "sm_pct": 72.0,
+   "memory_pct": 67.5,
+   "occupancy_pct": 19.8,
+   "tensor_pct": 75.2
+  },
+  {
+   "name": "generatedNativePointwise",
+   "calls": 30,
+   "ms_per_batch": 0.544,
+   "share_pct": 8.8,
+   "sm_pct": 44.1,
+   "memory_pct": 77.3,
+   "occupancy_pct": 83.1,
+   "tensor_pct": 0.0
+  },
+  {
+   "name": "CUTENSOR_NAMESPACE::permutationKernelPLC3",
+   "calls": 12,
+   "ms_per_batch": 0.426,
+   "share_pct": 6.9,
+   "sm_pct": 48.4,
+   "memory_pct": 83.3,
+   "occupancy_pct": 90.9,
+   "tensor_pct": 0.0
+  },
+  {
+   "name": "sm80_xmma_fprop_implicit_gemm_f16f16_f16f16_f16_nhwckrsc_nhwc_tilesize64",
+   "calls": 4,
+   "ms_per_batch": 0.268,
+   "share_pct": 4.3,
+   "sm_pct": 42.6,
+   "memory_pct": 66.4,
+   "occupancy_pct": 8.3,
+   "tensor_pct": 40.2
+  },
+  {
+   "name": "genericReformat::copyPackedKernel",
+   "calls": 19,
+   "ms_per_batch": 0.171,
+   "share_pct": 2.8,
+   "sm_pct": 48.5,
+   "memory_pct": 48.5,
+   "occupancy_pct": 72.7,
+   "tensor_pct": 0.0
+  },
+  {
+   "name": "sm50_xmma_pooling_coalescedC_NHWC_kMAX_3_False_execute_kernel_trt",
+   "calls": 3,
+   "ms_per_batch": 0.147,
+   "share_pct": 2.4,
+   "sm_pct": 82.2,
+   "memory_pct": 57.5,
+   "occupancy_pct": 87.6,
+   "tensor_pct": 0.0
+  },
+  {
+   "name": "__myl_CastTranSlicSlicSlicSlicSlicSlicConc_0x5ab2fb4fd38ec4093022568adbf",
+   "calls": 1,
+   "ms_per_batch": 0.11,
+   "share_pct": 1.8,
+   "sm_pct": 43.4,
+   "memory_pct": 53.4,
+   "occupancy_pct": 78.2,
+   "tensor_pct": 0.0
+  },
+  {
+   "name": "sm75_xmma_fprop_implicit_gemm_f16f16_f16f16_f16_nhwckrsc_nhwc_tilesize25",
+   "calls": 1,
+   "ms_per_batch": 0.043,
+   "share_pct": 0.7,
+   "sm_pct": 10.4,
+   "memory_pct": 84.5,
+   "occupancy_pct": 22.4,
+   "tensor_pct": 11.4
+  },
+  {
+   "name": "ResizeVectorizedH2x4NearestKernel",
+   "calls": 2,
+   "ms_per_batch": 0.028,
+   "share_pct": 0.4,
+   "sm_pct": 28.5,
+   "memory_pct": 76.6,
+   "occupancy_pct": 79.6,
+   "tensor_pct": 0.0
+  },
+  {
+   "name": "sm75_xmma_fprop_implicit_gemm_f16f16_f16f16_f16_nhwckrsc_nhwc_tilesize64",
+   "calls": 1,
+   "ms_per_batch": 0.013,
+   "share_pct": 0.2,
+   "sm_pct": 13.4,
+   "memory_pct": 69.3,
+   "occupancy_pct": 39.4,
+   "tensor_pct": 9.9
+  }
+ ]
+}
