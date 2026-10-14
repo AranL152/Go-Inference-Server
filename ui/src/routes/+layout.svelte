@@ -46,6 +46,7 @@
 			<div class="mx-auto flex max-w-6xl items-center justify-between px-6 py-8">
 				<div>
 					<h1 class="text-2xl font-semibold tracking-tight text-[var(--fg)]">Inference Server</h1>
+					<p class="mt-1 text-sm text-[var(--text-muted)]">GPU object detection</p>
 				</div>
 				<button
 					onclick={toggleTheme}
