@@ -27,6 +27,7 @@ import (
 	_ "net/http/pprof" // registers /debug/pprof/* on http.DefaultServeMux
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -174,12 +175,13 @@ func main() {
 			letterboxSize, letterboxSize, *cpuDecoders, *confFlag, *iouFlag)
 	}
 
-	srv := &server{engine: engine, quiet: *quiet, gpuPool: gpuPool, cpuPool: cpuPool, hybrid: hybrid}
+	srv := &server{engine: engine, modelName: filepath.Base(*modelPath), quiet: *quiet, gpuPool: gpuPool, cpuPool: cpuPool, hybrid: hybrid}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/predict", instrument(&predictMetrics, srv.handlePredict))
 	mux.HandleFunc("/health", srv.handleHealth)
 	mux.HandleFunc("/stats", srv.handleStats)
 	mux.HandleFunc("/metrics", srv.handleMetrics)
+	(&jobStore{s: srv}).routes(mux)
 	// net/http/pprof registers on the default mux; expose it through ours so
 	// `go tool pprof http://.../debug/pprof/{profile,allocs}` works.
 	mux.Handle("/debug/pprof/", http.DefaultServeMux)
@@ -205,11 +207,12 @@ func main() {
 }
 
 type server struct {
-	engine  *Engine
-	quiet   bool
-	gpuPool *gpuDecoderPool     // non-nil when -gpu-preprocess is set
-	cpuPool *cpuDecoderPool     // non-nil when -cpu-preprocess is set (libjpeg-turbo)
-	hybrid  *hybridPreprocessor // non-nil when both are set (CPU primary, GPU overflow)
+	engine    *Engine
+	modelName string
+	quiet     bool
+	gpuPool   *gpuDecoderPool     // non-nil when -gpu-preprocess is set
+	cpuPool   *cpuDecoderPool     // non-nil when -cpu-preprocess is set (libjpeg-turbo)
+	hybrid    *hybridPreprocessor // non-nil when both are set (CPU primary, GPU overflow)
 }
 
 type predictResponse struct {
