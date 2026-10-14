@@ -67,6 +67,7 @@ func main() {
 	ioBinding := flag.Bool("io-binding", false, "run full batches through pre-bound fixed-shape I/O tensors (ORT IoBinding): skips per-batch tensor create/destroy and output allocation")
 	deviceBinding := flag.Bool("device-binding", false, "run full batches through device-resident pre-bound I/O with pinned-host staging: engine-owned cudaMalloc buffers, H2D/D2H under engine control; takes precedence over -io-binding")
 	trt := flag.String("trt", "", "run the model through the TensorRT execution provider (fp16 allowed), caching built engines in this directory; needs TensorRT 10 on LD_LIBRARY_PATH and a model whose weights are initializers, not graph inputs (e.g. resnet18_op13.onnx or resnet18_int8.onnx)")
+	jobsDir := flag.String("jobs-dir", "jobs", "where detection job results and uploads are saved (empty keeps them in memory only)")
 	confFlag := flag.Float64("conf", 0.3, "detector score threshold")
 	iouFlag := flag.Float64("iou", 0.45, "detector NMS IoU threshold")
 	trtInt8Flag := flag.Bool("trt-int8", false, "with -trt: also allow int8 kernels; use with a QDQ model from quantize_int8.py")
@@ -181,7 +182,14 @@ func main() {
 	mux.HandleFunc("/health", srv.handleHealth)
 	mux.HandleFunc("/stats", srv.handleStats)
 	mux.HandleFunc("/metrics", srv.handleMetrics)
-	(&jobStore{s: srv}).routes(mux)
+	jobs := &jobStore{s: srv, dir: *jobsDir}
+	if jobs.dir != "" {
+		if err := os.MkdirAll(jobs.dir, 0o755); err != nil {
+			log.Fatalf("FATAL: jobs dir: %v", err)
+		}
+		jobs.load()
+	}
+	jobs.routes(mux)
 	mux.HandleFunc("GET /api/system", startSysMonitor(engine).handleSystem)
 	mux.Handle("/", uiHandler())
 	// net/http/pprof registers on the default mux; expose it through ours so
