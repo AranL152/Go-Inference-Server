@@ -2,10 +2,9 @@
 package main
 
 import (
-	"bufio"
+	"log"
 	"net/http"
 	"os"
-	"os/exec"
 	"runtime"
 	"slices"
 	"strconv"
@@ -34,6 +33,15 @@ type gpuSample struct {
 	Fan        float64 `json:"fan"`
 	PCIeGen    float64 `json:"pcie_gen"`
 	PCIeWidth  float64 `json:"pcie_width"`
+
+	PCIeRxMBs      float64  `json:"pcie_rx_mbs"`
+	PCIeTxMBs      float64  `json:"pcie_tx_mbs"`
+	EncUtil        float64  `json:"enc_util"`
+	DecUtil        float64  `json:"dec_util"`
+	JpgUtil        float64  `json:"jpg_util"`
+	Throttle       []string `json:"throttle"`
+	PowerViolPct   float64  `json:"power_violation_pct"`
+	ThermalViolPct float64  `json:"thermal_violation_pct"`
 }
 
 type sysSample struct {
@@ -86,44 +94,13 @@ func (l *latencyWindow) drain() (p50, p99 float64) {
 type sysMonitor struct {
 	engine *Engine
 	mu     sync.Mutex
-	gpu    *gpuSample
 	ring   []sysSample
 }
 
 func startSysMonitor(e *Engine) *sysMonitor {
 	m := &sysMonitor{engine: e}
-	go m.readGPU()
 	go m.sample()
 	return m
-}
-
-var gpuFields = "name,utilization.gpu,utilization.memory,memory.used,memory.total,temperature.gpu," +
-	"power.draw,power.limit,clocks.sm,clocks.max.sm,clocks.mem,fan.speed,pcie.link.gen.current,pcie.link.width.current"
-
-// readGPU streams NVML readings from nvidia-smi and restarts it if it exits
-func (m *sysMonitor) readGPU() {
-	for {
-		cmd := exec.Command("nvidia-smi", "--query-gpu="+gpuFields, "--format=csv,noheader,nounits", "-lms", "1000")
-		out, err := cmd.StdoutPipe()
-		if err == nil && cmd.Start() == nil {
-			sc := bufio.NewScanner(out)
-			for sc.Scan() {
-				f := strings.Split(sc.Text(), ", ")
-				if len(f) < 14 {
-					continue
-				}
-				num := func(i int) float64 { v, _ := strconv.ParseFloat(strings.TrimSpace(f[i]), 64); return v }
-				g := &gpuSample{Name: f[0], Util: num(1), MemUtil: num(2), MemUsedMB: num(3), MemTotalMB: num(4),
-					TempC: num(5), PowerW: num(6), PowerMaxW: num(7), SMClock: num(8), SMClockMax: num(9),
-					MemClock: num(10), Fan: num(11), PCIeGen: num(12), PCIeWidth: num(13)}
-				m.mu.Lock()
-				m.gpu = g
-				m.mu.Unlock()
-			}
-			cmd.Wait()
-		}
-		time.Sleep(5 * time.Second)
-	}
 }
 
 type cpuTimes struct{ busy, total float64 }
@@ -198,6 +175,10 @@ func pct(a, b float64) float64 {
 }
 
 func (m *sysMonitor) sample() {
+	gpu, err := openGPU()
+	if err != nil {
+		log.Printf("GPU stats unavailable: %v", err)
+	}
 	prevCPU := readCPUTimes()
 	prevTicks, _ := readProc()
 	pb, pr, _, pw, pn, _, pbusy, pidle := m.engine.CumulativeStats()
@@ -237,8 +218,10 @@ func (m *sysMonitor) sample() {
 		s.P50Ms, s.P99Ms = recentLatency.drain()
 		prevT = now
 
+		if gpu != nil {
+			s.GPU = gpu.sample()
+		}
 		m.mu.Lock()
-		s.GPU = m.gpu
 		m.ring = append(m.ring, s)
 		if len(m.ring) > sampleHistory {
 			m.ring = m.ring[len(m.ring)-sampleHistory:]

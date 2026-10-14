@@ -6,6 +6,8 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Go toolchain (installed to ~/sdk/go, no sudo needed).
 export PATH="$HOME/sdk/go/bin:$HOME/go/bin:$PATH"
+# go-nvml wraps every NVML call including deprecated ones
+export CGO_CFLAGS="${CGO_CFLAGS:--O2 -g} -Wno-deprecated-declarations"
 
 # Runtime library search path. Order matters:
 #   onnxruntime/lib  -> libonnxruntime.so + libonnxruntime_providers_cuda.so
