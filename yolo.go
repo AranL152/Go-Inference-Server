@@ -58,31 +58,56 @@ func letterboxInto(img *image.RGBA, out []float32) float32 {
 	r := min(float32(letterboxSize)/float32(sw), float32(letterboxSize)/float32(sh))
 	rw, rh := int(float32(sw)*r), int(float32(sh)*r)
 	const plane = letterboxSize * letterboxSize
-	for i := range out[:3*plane] {
-		out[i] = letterboxPad
-	}
+	b, g, rd := out[:plane], out[plane:2*plane], out[2*plane:3*plane]
+
+	// source column offsets and weights are the same for every row
+	var x0s, x1s [letterboxSize]int
+	var wxs [letterboxSize]float32
 	inv := 1 / r
-	for y := 0; y < rh; y++ {
+	for x := 0; x < rw; x++ {
+		fx := (float32(x)+0.5)*inv - 0.5
+		x0 := max(floor32(fx), 0)
+		x0s[x], x1s[x] = x0*4, min(x0+1, sw-1)*4
+		wxs[x] = max(fx-float32(x0), 0)
+	}
+	for y := 0; y < letterboxSize; y++ {
+		i := y * letterboxSize
+		if y >= rh {
+			fill(b[i:i+letterboxSize], g[i:i+letterboxSize], rd[i:i+letterboxSize])
+			continue
+		}
+		fill(b[i+rw:i+letterboxSize], g[i+rw:i+letterboxSize], rd[i+rw:i+letterboxSize])
+		if rw == sw && rh == sh {
+			row := img.Pix[y*img.Stride:]
+			for x := 0; x < rw; x++ {
+				p := row[x*4 : x*4+3]
+				rd[i+x], g[i+x], b[i+x] = float32(p[0]), float32(p[1]), float32(p[2])
+			}
+			continue
+		}
 		fy := (float32(y)+0.5)*inv - 0.5
 		y0 := max(floor32(fy), 0)
-		y1 := min(y0+1, sh-1)
 		wy := max(fy-float32(y0), 0)
 		row0 := img.Pix[y0*img.Stride:]
-		row1 := img.Pix[y1*img.Stride:]
+		row1 := img.Pix[min(y0+1, sh-1)*img.Stride:]
 		for x := 0; x < rw; x++ {
-			fx := (float32(x)+0.5)*inv - 0.5
-			x0 := max(floor32(fx), 0)
-			x1 := min(x0+1, sw-1)
-			wx := max(fx-float32(x0), 0)
-			i := y*letterboxSize + x
-			for c := 0; c < 3; c++ {
-				a := float32(row0[x0*4+c])*(1-wx) + float32(row0[x1*4+c])*wx
-				b := float32(row1[x0*4+c])*(1-wx) + float32(row1[x1*4+c])*wx
-				out[(2-c)*plane+i] = a*(1-wy) + b*wy // RGBA to BGR planes
+			a0, a1, wx := x0s[x], x1s[x], wxs[x]
+			for c, dst := range [3][]float32{rd, g, b} {
+				top := float32(row0[a0+c]) + (float32(row0[a1+c])-float32(row0[a0+c]))*wx
+				bot := float32(row1[a0+c]) + (float32(row1[a1+c])-float32(row1[a0+c]))*wx
+				dst[i+x] = top + (bot-top)*wy
 			}
 		}
 	}
 	return r
+}
+
+func fill(planes ...[]float32) {
+	for _, p := range planes {
+		for i := range p {
+			p[i] = letterboxPad
+		}
+	}
 }
 
 // PreprocessLetterbox decodes on a pooled decoder and returns a pooled input tensor

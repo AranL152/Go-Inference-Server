@@ -13,3 +13,6 @@
 
 # Local editor / tooling settings
 .claude/
+
+# TensorRT engine cache
+/trt_cache/

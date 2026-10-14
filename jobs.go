@@ -20,7 +20,7 @@ import (
 	"time"
 )
 
-const jobWorkers = 64
+const jobWorkers = 256
 
 type imageResult struct {
 	Path       string      `json:"path"`
