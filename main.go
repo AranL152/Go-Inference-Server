@@ -51,7 +51,7 @@ const rawRGBContentType = "application/x-raw-rgb"
 func main() {
 	addr := flag.String("addr", ":8080", "HTTP listen address")
 	modelPath := flag.String("model", "resnet18.onnx", "path to the ONNX model")
-	labelsPath := flag.String("labels", "imagenet_classes.txt", "path to ImageNet class labels (optional)")
+	labelsPath := flag.String("labels", "", "path to class labels (default imagenet_classes.txt or coco_classes.txt for detectors)")
 	libPath := flag.String("lib", "onnxruntime/lib/libonnxruntime.so", "path to libonnxruntime.so")
 	maxBatch := flag.Int("max-batch", 32, "dynamic batching: max requests per inference batch")
 	maxWait := flag.Duration("max-wait", 5*time.Millisecond, "dynamic batching: max time to wait assembling a batch before running it")
@@ -66,9 +66,18 @@ func main() {
 	ioBinding := flag.Bool("io-binding", false, "run full batches through pre-bound fixed-shape I/O tensors (ORT IoBinding): skips per-batch tensor create/destroy and output allocation")
 	deviceBinding := flag.Bool("device-binding", false, "run full batches through device-resident pre-bound I/O with pinned-host staging: engine-owned cudaMalloc buffers, H2D/D2H under engine control; takes precedence over -io-binding")
 	trt := flag.String("trt", "", "run the model through the TensorRT execution provider (fp16 allowed), caching built engines in this directory; needs TensorRT 10 on LD_LIBRARY_PATH and a model whose weights are initializers, not graph inputs (e.g. resnet18_op13.onnx or resnet18_int8.onnx)")
+	confFlag := flag.Float64("conf", 0.3, "detector score threshold")
+	iouFlag := flag.Float64("iou", 0.45, "detector NMS IoU threshold")
 	trtInt8Flag := flag.Bool("trt-int8", false, "with -trt: also allow int8 kernels; use with a QDQ model from quantize_int8.py")
 	flag.Parse()
 
+	detConfThresh, detIoUThresh = float32(*confFlag), float32(*iouFlag)
+	if *labelsPath == "" {
+		*labelsPath = "imagenet_classes.txt"
+		if modelIsDetector(*modelPath, *libPath) {
+			*labelsPath = "coco_classes.txt"
+		}
+	}
 	labels, err := loadLabels(*labelsPath)
 	if err != nil {
 		log.Printf("WARNING: could not load labels from %q (%v) — responses will use numeric class index only", *labelsPath, err)
@@ -152,6 +161,17 @@ func main() {
 		log.Printf("CPU preprocessing enabled: %d libjpeg-turbo decoders (SIMD, 1/4 DCT scale); GPU runs inference only", *cpuDecoders)
 	default:
 		log.Printf("CPU preprocessing (default, pure-Go image/jpeg); pass -cpu-preprocess (libjpeg-turbo) or -gpu-preprocess (nvJPEG)")
+	}
+
+	if engine.Detector() && cpuPool == nil {
+		// detector preprocessing always runs on the libjpeg-turbo pool
+		cpuPool, err = newCPUDecoderPool(*cpuDecoders)
+		if err != nil {
+			log.Fatalf("FATAL: could not initialize CPU decoder pool: %v", err)
+		}
+		defer cpuPool.Close()
+		log.Printf("detector model: letterbox %dx%d on %d libjpeg-turbo decoders, conf=%.2f iou=%.2f",
+			letterboxSize, letterboxSize, *cpuDecoders, *confFlag, *iouFlag)
 	}
 
 	srv := &server{engine: engine, quiet: *quiet, gpuPool: gpuPool, cpuPool: cpuPool, hybrid: hybrid}
@@ -240,6 +260,11 @@ func (s *server) handlePredict(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer body.Close()
+
+	if s.engine.Detector() {
+		s.handleDetect(w, body)
+		return
+	}
 
 	var input []float32
 	format := "jpeg"
