@@ -13,6 +13,7 @@
 
 # Local editor / tooling settings
 .claude/
+.vscode/
 
 # TensorRT engine cache
 /trt_cache/
