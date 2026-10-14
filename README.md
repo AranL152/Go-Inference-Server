@@ -5,7 +5,7 @@ CUDA execution provider. It loads the model onto the GPU once, batches incoming
 requests dynamically, and serves top-1 ImageNet predictions.
 
 The point of the repo is throughput on one card: it went from 345 req/s to about
-9,100 req/s on a single RTX 4080 SUPER, and everything in `loadtest/` exists so
+18,900 req/s on a single RTX 4080 SUPER, and everything in `loadtest/` exists so
 that number is measured rather than claimed.
 
 ## What's in it
@@ -52,7 +52,11 @@ not committed; `SETUP.md` covers how to get them and what the version
 constraints are.
 
 ```bash
-# throughput operating point
+# throughput operating point (TensorRT INT8, uint8 input, raw-RGB bodies only)
+./run.sh -quiet -max-batch 32 -infer-lanes 2 -device-binding \
+         -model resnet18_int8_u8.onnx -trt trt_cache -trt-int8
+
+# float model that also takes JPEG and raw-tensor bodies
 ./run.sh -cpu-preprocess -quiet -max-batch 32 -infer-lanes 5 \
          -model resnet18_fp16.onnx -device-binding
 
@@ -107,9 +111,10 @@ inference, NMS):
 | + device-binding | 696 |
 | + 3 infer lanes, 256 job workers | 996 |
 | + letterbox column tables and a no-resize fast path | 1,173 |
+| + uint8 input, cast on the GPU (`yolox_s_u8.onnx`) | 1,595 |
 
 Accuracy through the full Go pipeline is 40.4 COCO mAP (0.5:0.95) on val2017
-for both FP32 and TensorRT FP16, against 40.5 published for YOLOX-S. Measure it
+for FP32, TensorRT FP16 and the uint8 input model, against 40.5 published for YOLOX-S. Measure it
 with `eval_coco.py` against a server started with `-conf 0.001 -iou 0.65`.
 
 TensorRT INT8 (`quantize_yolox.py`, Conv-only QDQ, MinMax calibration on 512
@@ -186,6 +191,14 @@ Each step was driven by whatever the previous measurement pointed at.
    per-Run time went from 20.4 ms to 15.0 ms.
 10. **Prometheus endpoint.** The counters that were already being collected for
     the tuning work, exported at `/metrics` with a `/predict` latency histogram.
+11. **TensorRT and INT8 (~11,500 req/s).** The TensorRT execution provider
+    (`-trt`) cut a batch of 32 from 4.2 ms to 2.1 ms; Conv-only INT8 kept top-1
+    within 0.1 pt of FP16. The GPU stopped being the limit at about 46% busy.
+12. **uint8 inputs (~18,900 req/s).** `add_uint8_input.py` gives the model a
+    uint8 input and moves the cast and normalize into the graph, so a raw-RGB
+    body is copied into the batch as is: no per-pixel CPU work and 4x fewer bytes
+    through packing and the H2D copy. Top-1 agreement with exact FP32 on 1,000
+    COCO images is 919/1000 against 911/1000 for the float-input INT8 model.
 
 ## Challenges
 
