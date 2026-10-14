@@ -84,7 +84,7 @@ type bindingSlot struct {
 	in      *ort.Tensor[float32]
 	out     *ort.Tensor[float32]
 	binding *ort.IoBinding
-	inData  []float32
+	inData  []byte
 }
 
 // useDeviceBinding switches full batches to device-resident pre-bound I/O
@@ -103,7 +103,7 @@ var useDeviceBinding bool
 type deviceSlot struct {
 	devIn, devOut unsafe.Pointer
 	stagePtr      unsafe.Pointer
-	stage         []float32 // pinned, len maxBatch*inputElems
+	stage         []byte // pinned, len maxBatch*inBytes
 	in, out       *ort.DeviceTensor
 	binding       *ort.IoBinding
 }
@@ -143,7 +143,7 @@ type batchResult struct {
 // channel its result must be routed back on. The channel is buffered (size 1) so
 // the collector never blocks delivering a result even if the caller has gone away.
 type batchRequest struct {
-	input    []float32 // length inputElems, NCHW
+	input    []byte // one image in the model input layout and element type
 	resultCh chan batchResult
 	submitT  time.Time // when the handler submitted it (for queue-wait timing)
 }
@@ -159,7 +159,7 @@ type packedBatch struct {
 	// (-device-binding, full batches only); slot/inT/raw are nil then.
 	dslot *deviceSlot
 	inT   ort.Value
-	raw   []float32       // full-capacity staging buffer backing inT; returned to batchBufPool
+	raw   []byte          // full-capacity staging buffer backing inT; returned to batchBufPool
 	batch []*batchRequest // ordered; row i of the output belongs to batch[i]
 }
 
@@ -199,6 +199,8 @@ type Engine struct {
 	inDims   []int64 // C H W
 	outDims  []int64 // per image output shape
 	inElems  int
+	inBytes  int
+	inU8     bool // uint8 input so the GPU does the float conversion
 	outElems int
 	detect   bool
 
@@ -373,6 +375,7 @@ func NewEngine(modelPath, libPath string, labels []string, maxBatch int, maxWait
 		inDims:   inD[1:],
 		outDims:  outD[1:],
 		inElems:  int(inD[1] * inD[2] * inD[3]),
+		inU8:     ins[0].DataType == ort.TensorElementDataTypeUint8,
 		outElems: 1,
 		detect:   len(outD) == 3,
 		maxBatch: maxBatch,
@@ -389,7 +392,17 @@ func NewEngine(modelPath, libPath string, labels []string, maxBatch int, maxWait
 	if e.inElems <= 0 || e.outElems <= 0 {
 		return nil, fmt.Errorf("model needs fixed non batch dims in %v out %v", inD, outD)
 	}
-	e.batchBufPool.New = func() any { return make([]float32, maxBatch*e.inElems) }
+	if !e.inU8 && ins[0].DataType != ort.TensorElementDataTypeFloat {
+		return nil, fmt.Errorf("model input must be float32 or uint8")
+	}
+	e.inBytes = e.inElems * 4
+	if e.inU8 {
+		e.inBytes = e.inElems
+		if useIoBinding && !useDeviceBinding {
+			return nil, fmt.Errorf("uint8 models need -device-binding or the plain path not -io-binding")
+		}
+	}
+	e.batchBufPool.New = func() any { return make([]byte, maxBatch*e.inBytes) }
 
 	// CUDA execution provider — the line that puts work on the RTX 4080.
 	e.options, err = ort.NewSessionOptions()
@@ -547,10 +560,21 @@ func (e *Engine) Release() {
 // it itself: tests share one tensor across many concurrent Predicts, and pooling
 // a slice that other calls still read would corrupt batches.
 func (e *Engine) Predict(input []float32) (Prediction, error) {
-	if len(input) != e.inElems {
-		return Prediction{}, fmt.Errorf("input length %d, want %d", len(input), e.inElems)
+	if e.inU8 || len(input) != e.inElems {
+		return Prediction{}, fmt.Errorf("input length %d float32, want %d", len(input), e.inElems)
 	}
+	return e.submit(unsafe.Slice((*byte)(unsafe.Pointer(&input[0])), e.inBytes))
+}
 
+// PredictBytes runs one image already in a uint8 model input layout
+func (e *Engine) PredictBytes(input []byte) (Prediction, error) {
+	if !e.inU8 || len(input) != e.inBytes {
+		return Prediction{}, fmt.Errorf("input length %d bytes, want %d uint8", len(input), e.inBytes)
+	}
+	return e.submit(input)
+}
+
+func (e *Engine) submit(input []byte) (Prediction, error) {
 	req := &batchRequest{input: input, resultCh: make(chan batchResult, 1), submitT: time.Now()}
 
 	select {
@@ -678,14 +702,16 @@ func (e *Engine) newBindingSlot() (*bindingSlot, error) {
 		out.Destroy()
 		return nil, fmt.Errorf("bind I/O: %w", err)
 	}
-	return &bindingSlot{in: in, out: out, binding: b, inData: in.GetData()}, nil
+	data := in.GetData()
+	return &bindingSlot{in: in, out: out, binding: b,
+		inData: unsafe.Slice((*byte)(unsafe.Pointer(&data[0])), len(data)*4)}, nil
 }
 
 // newDeviceSlot creates one device-resident pre-bound I/O set for the
 // -device-binding path: device input/output buffers, pinned host staging,
 // and an IoBinding tying the device tensors to the session.
 func (e *Engine) newDeviceSlot() (s *deviceSlot, err error) {
-	inBytes := e.maxBatch * e.inElems * 4
+	inBytes := e.maxBatch * e.inBytes
 	outBytes := e.maxBatch * e.outElems * 4
 	s = &deviceSlot{}
 	defer func() {
@@ -702,10 +728,12 @@ func (e *Engine) newDeviceSlot() (s *deviceSlot, err error) {
 	if s.stagePtr, err = cudaHostAlloc(inBytes); err != nil {
 		return nil, err
 	}
-	s.stage = unsafe.Slice((*float32)(s.stagePtr), e.maxBatch*e.inElems)
-	s.in, err = ort.NewCudaFloat32Tensor(
-		e.inShape(e.maxBatch),
-		s.devIn, uintptr(inBytes), 0)
+	s.stage = unsafe.Slice((*byte)(s.stagePtr), inBytes)
+	inType := ort.TensorElementDataType(ort.TensorElementDataTypeFloat)
+	if e.inU8 {
+		inType = ort.TensorElementDataTypeUint8
+	}
+	s.in, err = ort.NewCudaTensor(e.inShape(e.maxBatch), s.devIn, uintptr(inBytes), 0, inType)
 	if err != nil {
 		return nil, fmt.Errorf("device input tensor: %w", err)
 	}
@@ -765,7 +793,7 @@ func (e *Engine) packAndSend(batch []*batchRequest) {
 		// host staging; the lane does the H2D copy itself.
 		slot := <-e.devSlotPool
 		for i, r := range batch {
-			copy(slot.stage[i*e.inElems:(i+1)*e.inElems], r.input)
+			copy(slot.stage[i*e.inBytes:(i+1)*e.inBytes], r.input)
 			r.input = nil
 		}
 		e.inferCh <- &packedBatch{dslot: slot, batch: batch}
@@ -777,19 +805,25 @@ func (e *Engine) packAndSend(batch []*batchRequest) {
 		// as the inferCh send below; slots return as unpack workers finish.
 		slot := <-e.slotPool
 		for i, r := range batch {
-			copy(slot.inData[i*e.inElems:(i+1)*e.inElems], r.input)
+			copy(slot.inData[i*e.inBytes:(i+1)*e.inBytes], r.input)
 			r.input = nil
 		}
 		e.inferCh <- &packedBatch{slot: slot, batch: batch}
 		return
 	}
-	raw := e.batchBufPool.Get().([]float32)
-	data := raw[:n*e.inElems] // NewTensor requires the exact batch length
+	raw := e.batchBufPool.Get().([]byte)
+	data := raw[:n*e.inBytes] // NewTensor requires the exact batch length
 	for i, r := range batch {
-		copy(data[i*e.inElems:(i+1)*e.inElems], r.input)
+		copy(data[i*e.inBytes:(i+1)*e.inBytes], r.input)
 		r.input = nil // engine is done with the caller's tensor after this copy
 	}
-	inT, err := ort.NewTensor(e.inShape(n), data)
+	var inT ort.Value
+	var err error
+	if e.inU8 {
+		inT, err = ort.NewTensor(e.inShape(n), data)
+	} else {
+		inT, err = ort.NewTensor(e.inShape(n), unsafe.Slice((*float32)(unsafe.Pointer(&data[0])), n*e.inElems))
+	}
 	if err != nil {
 		e.batchBufPool.Put(raw)
 		failBatch(batch, fmt.Errorf("create input tensor: %w", err))
@@ -839,7 +873,7 @@ func (e *Engine) inferLoop() {
 			// staleness of CPU-backed bound inputs applies.
 			s := pb.dslot
 			runT := time.Now()
-			runErr := cudaMemcpyH2D(s.devIn, s.stagePtr, n*e.inElems*4)
+			runErr := cudaMemcpyH2D(s.devIn, s.stagePtr, n*e.inBytes)
 			if runErr == nil {
 				runErr = e.session.RunWithBinding(s.binding)
 			}
@@ -1050,6 +1084,9 @@ func (e *Engine) outShape(n int) ort.Shape {
 
 // InputElems is the per image input length the model expects
 func (e *Engine) InputElems() int { return e.inElems }
+
+// InputU8 reports whether the model takes uint8 input through PredictBytes
+func (e *Engine) InputU8() bool { return e.inU8 }
 
 // Detector reports whether the model outputs boxes rather than class scores
 func (e *Engine) Detector() bool { return e.detect }

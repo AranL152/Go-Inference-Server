@@ -29,7 +29,7 @@ type Detection struct {
 	Box        [4]float32 `json:"box"`
 }
 
-var letterboxPool = sync.Pool{New: func() any { return make([]float32, 3*letterboxSize*letterboxSize) }}
+var letterboxPool = sync.Pool{New: func() any { return make([]byte, 3*letterboxSize*letterboxSize) }}
 
 // chooseScaleLong picks the strongest DCT downscale that keeps the longer side at or above target
 func chooseScaleLong(w, h, target int) (num, den int) {
@@ -42,8 +42,8 @@ func chooseScaleLong(w, h, target int) (num, den int) {
 	return 1, 1
 }
 
-// DecodeLetterbox decodes jpeg into out as a 3x640x640 BGR float tensor in the 0 to 255 range
-func (d *jpegDecoder) DecodeLetterbox(jpeg []byte, out []float32) (Letterbox, error) {
+// DecodeLetterbox decodes jpeg into out as 3x640x640 BGR planes
+func (d *jpegDecoder) DecodeLetterbox(jpeg []byte, out []byte) (Letterbox, error) {
 	img, fw, fh, err := d.decodeFitLong(jpeg, letterboxSize)
 	if err != nil {
 		return Letterbox{}, err
@@ -53,7 +53,7 @@ func (d *jpegDecoder) DecodeLetterbox(jpeg []byte, out []float32) (Letterbox, er
 }
 
 // letterboxInto resizes img to fit 640x640 at the top left and pads the rest
-func letterboxInto(img *image.RGBA, out []float32) float32 {
+func letterboxInto(img *image.RGBA, out []byte) float32 {
 	sw, sh := img.Rect.Dx(), img.Rect.Dy()
 	r := min(float32(letterboxSize)/float32(sw), float32(letterboxSize)/float32(sh))
 	rw, rh := int(float32(sw)*r), int(float32(sh)*r)
@@ -81,7 +81,7 @@ func letterboxInto(img *image.RGBA, out []float32) float32 {
 			row := img.Pix[y*img.Stride:]
 			for x := 0; x < rw; x++ {
 				p := row[x*4 : x*4+3]
-				rd[i+x], g[i+x], b[i+x] = float32(p[0]), float32(p[1]), float32(p[2])
+				rd[i+x], g[i+x], b[i+x] = p[0], p[1], p[2]
 			}
 			continue
 		}
@@ -92,17 +92,17 @@ func letterboxInto(img *image.RGBA, out []float32) float32 {
 		row1 := img.Pix[min(y0+1, sh-1)*img.Stride:]
 		for x := 0; x < rw; x++ {
 			a0, a1, wx := x0s[x], x1s[x], wxs[x]
-			for c, dst := range [3][]float32{rd, g, b} {
+			for c, dst := range [3][]byte{rd, g, b} {
 				top := float32(row0[a0+c]) + (float32(row0[a1+c])-float32(row0[a0+c]))*wx
 				bot := float32(row1[a0+c]) + (float32(row1[a1+c])-float32(row1[a0+c]))*wx
-				dst[i+x] = top + (bot-top)*wy
+				dst[i+x] = uint8(top + (bot-top)*wy + 0.5)
 			}
 		}
 	}
 	return r
 }
 
-func fill(planes ...[]float32) {
+func fill(planes ...[]byte) {
 	for _, p := range planes {
 		for i := range p {
 			p[i] = letterboxPad
@@ -110,12 +110,12 @@ func fill(planes ...[]float32) {
 	}
 }
 
-// PreprocessLetterbox decodes on a pooled decoder and returns a pooled input tensor
-func (p *cpuDecoderPool) PreprocessLetterbox(jpeg []byte) ([]float32, Letterbox, error) {
+// PreprocessLetterbox decodes on a pooled decoder and returns a pooled uint8 input
+func (p *cpuDecoderPool) PreprocessLetterbox(jpeg []byte) ([]byte, Letterbox, error) {
 	d := <-p.free
 	defer func() { p.free <- d }()
 	t := time.Now()
-	out := letterboxPool.Get().([]float32)
+	out := letterboxPool.Get().([]byte)
 	lb, err := d.DecodeLetterbox(jpeg, out)
 	if err != nil {
 		letterboxPool.Put(out)

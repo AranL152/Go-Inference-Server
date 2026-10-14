@@ -53,7 +53,7 @@ func TestLetterboxIntoPadsAndSwapsChannels(t *testing.T) {
 	for i := 0; i < len(img.Pix); i += 4 {
 		img.Pix[i], img.Pix[i+1], img.Pix[i+2], img.Pix[i+3] = 10, 20, 30, 255
 	}
-	out := make([]float32, 3*letterboxSize*letterboxSize)
+	out := make([]byte, 3*letterboxSize*letterboxSize)
 	if r := letterboxInto(img, out); r != 2 {
 		t.Fatalf("scale %v want 2", r)
 	}
@@ -71,8 +71,14 @@ func TestYOLOEngineMatchesReference(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping GPU integration test in -short mode")
 	}
+	for _, model := range []string{"yolox_s.onnx", "yolox_s_u8.onnx"} {
+		t.Run(model, func(t *testing.T) { checkYOLOReference(t, model) })
+	}
+}
+
+func checkYOLOReference(t *testing.T, model string) {
 	labels, _ := loadLabels("coco_classes.txt")
-	e, err := NewEngine("yolox_s.onnx", "onnxruntime/lib/libonnxruntime.so", labels, 4, 2*time.Millisecond)
+	e, err := NewEngine(model, "onnxruntime/lib/libonnxruntime.so", labels, 4, 2*time.Millisecond)
 	if err != nil {
 		t.Fatalf("NewEngine: %v", err)
 	}
@@ -89,15 +95,10 @@ func TestYOLOEngineMatchesReference(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	in, lb, err := pool.PreprocessLetterbox(jpeg)
+	res, err := (&server{engine: e, cpuPool: pool}).detect(jpeg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	pred, err := e.Predict(in)
-	if err != nil {
-		t.Fatal(err)
-	}
-	lb.toOriginal(pred.Detections)
 
 	// python onnxruntime reference with cv2 letterbox
 	want := []struct {
@@ -110,10 +111,10 @@ func TestYOLOEngineMatchesReference(t *testing.T) {
 		{"truck", 0.612, [4]float32{463, 77, 694, 172}},
 	}
 	for i, w := range want {
-		if i >= len(pred.Detections) {
-			t.Fatalf("only %d detections %+v", len(pred.Detections), pred.Detections)
+		if i >= len(res.Detections) {
+			t.Fatalf("only %d detections %+v", len(res.Detections), res.Detections)
 		}
-		d := pred.Detections[i]
+		d := res.Detections[i]
 		t.Logf("%s %.3f %v", d.ClassName, d.Confidence, d.Box)
 		if d.ClassName != w.name || math.Abs(d.Confidence-w.conf) > 0.05 {
 			t.Errorf("detection %d got %s %.3f want %s %.3f", i, d.ClassName, d.Confidence, w.name, w.conf)

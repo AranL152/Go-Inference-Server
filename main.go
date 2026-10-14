@@ -278,6 +278,10 @@ func (s *server) handlePredict(w http.ResponseWriter, r *http.Request) {
 		s.handleDetect(w, body)
 		return
 	}
+	if s.engine.InputU8() && !strings.HasPrefix(r.Header.Get("Content-Type"), rawRGBContentType) {
+		writeError(w, http.StatusUnsupportedMediaType, "this model takes "+rawRGBContentType+" bodies only")
+		return
+	}
 
 	var input []float32
 	format := "jpeg"
@@ -309,6 +313,13 @@ func (s *server) handlePredict(w http.ResponseWriter, r *http.Request) {
 		if buf.Len() != inputElems {
 			bodyBufPool.Put(buf)
 			writeError(w, http.StatusBadRequest, fmt.Sprintf("raw rgb must be %d bytes (224x224x3 uint8), got %d", inputElems, buf.Len()))
+			return
+		}
+		if s.engine.InputU8() {
+			// the model normalizes on the GPU so the body goes in as is
+			pred, perr := s.engine.PredictBytes(buf.Bytes())
+			bodyBufPool.Put(buf)
+			s.writePrediction(w, pred, perr, "raw-rgb")
 			return
 		}
 		input = inputPool.Get().([]float32)
@@ -355,12 +366,15 @@ func (s *server) handlePredict(w http.ResponseWriter, r *http.Request) {
 	pred, err := s.engine.Predict(input)
 	// Predict has copied the tensor into the batch buffer, so recycle it.
 	inputPool.Put(input)
+	s.writePrediction(w, pred, err, format)
+}
+
+func (s *server) writePrediction(w http.ResponseWriter, pred Prediction, err error, format string) {
 	if err != nil {
 		log.Printf("inference error: %v", err)
 		writeError(w, http.StatusInternalServerError, "inference failed")
 		return
 	}
-
 	if !s.quiet {
 		log.Printf("predict: format=%s -> class=%d (%s) conf=%.4f", format, pred.ClassIndex, pred.ClassName, pred.Confidence)
 	}

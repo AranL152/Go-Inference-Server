@@ -4,9 +4,12 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"sync"
 
 	ort "github.com/yalue/onnxruntime_go"
 )
+
+var letterboxF32Pool = sync.Pool{New: func() any { return make([]float32, 3*letterboxSize*letterboxSize) }}
 
 type detectResponse struct {
 	Width      int         `json:"width"`
@@ -20,7 +23,17 @@ func (s *server) detect(jpeg []byte) (detectResponse, error) {
 	if err != nil {
 		return detectResponse{}, err
 	}
-	pred, err := s.engine.Predict(in)
+	var pred Prediction
+	if s.engine.InputU8() {
+		pred, err = s.engine.PredictBytes(in)
+	} else {
+		f := letterboxF32Pool.Get().([]float32)
+		for i, v := range in {
+			f[i] = float32(v)
+		}
+		pred, err = s.engine.Predict(f)
+		letterboxF32Pool.Put(f)
+	}
 	letterboxPool.Put(in)
 	if err != nil {
 		return detectResponse{}, err

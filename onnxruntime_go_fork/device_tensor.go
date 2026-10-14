@@ -29,6 +29,7 @@ var cudaMemoryInfos = map[int]*C.OrtMemoryInfo{}
 type DeviceTensor struct {
 	shape    Shape
 	ortValue *C.OrtValue
+	dataType TensorElementDataType
 }
 
 // NewCudaFloat32Tensor wraps sizeBytes of CUDA device memory at devicePtr
@@ -38,13 +39,24 @@ type DeviceTensor struct {
 // free the device buffer afterwards, never before.
 func NewCudaFloat32Tensor(s Shape, devicePtr unsafe.Pointer, sizeBytes uintptr,
 	deviceID int) (*DeviceTensor, error) {
+	return NewCudaTensor(s, devicePtr, sizeBytes, deviceID, TensorElementDataTypeFloat)
+}
+
+// NewCudaTensor is NewCudaFloat32Tensor for float32 or uint8 elements
+func NewCudaTensor(s Shape, devicePtr unsafe.Pointer, sizeBytes uintptr,
+	deviceID int, dataType TensorElementDataType) (*DeviceTensor, error) {
+	elemSize := map[TensorElementDataType]uintptr{
+		TensorElementDataTypeFloat: 4, TensorElementDataTypeUint8: 1}[dataType]
+	if elemSize == 0 {
+		return nil, fmt.Errorf("unsupported device tensor type %d", dataType)
+	}
 	if !IsInitialized() {
 		return nil, NotInitializedError
 	}
 	if e := s.Validate(); e != nil {
 		return nil, fmt.Errorf("Invalid tensor shape: %w", e)
 	}
-	if expected := uintptr(s.FlattenedSize()) * 4; sizeBytes != expected {
+	if expected := uintptr(s.FlattenedSize()) * elemSize; sizeBytes != expected {
 		return nil, fmt.Errorf("shape %s needs %d bytes, got %d",
 			s, expected, sizeBytes)
 	}
@@ -60,12 +72,12 @@ func NewCudaFloat32Tensor(s Shape, devicePtr unsafe.Pointer, sizeBytes uintptr,
 	var ortValue *C.OrtValue
 	status := C.CreateOrtTensorWithShape(devicePtr, C.size_t(sizeBytes),
 		(*C.int64_t)(unsafe.Pointer(&s[0])), C.int64_t(len(s)), memInfo,
-		C.ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, &ortValue)
+		C.ONNXTensorElementDataType(dataType), &ortValue)
 	if status != nil {
 		return nil, fmt.Errorf("ORT API error creating device tensor: %s",
 			statusToError(status))
 	}
-	return &DeviceTensor{shape: s.Clone(), ortValue: ortValue}, nil
+	return &DeviceTensor{shape: s.Clone(), ortValue: ortValue, dataType: dataType}, nil
 }
 
 func (t *DeviceTensor) Destroy() error {
@@ -76,7 +88,7 @@ func (t *DeviceTensor) Destroy() error {
 }
 
 func (t *DeviceTensor) DataType() C.ONNXTensorElementDataType {
-	return C.ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT
+	return C.ONNXTensorElementDataType(t.dataType)
 }
 
 func (t *DeviceTensor) GetShape() Shape { return t.shape.Clone() }
