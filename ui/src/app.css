@@ -18,6 +18,7 @@
 	--border: var(--grey-light);
 	--text-muted: var(--grey-mid);
 	--surface: #ffffff;
+	--series: var(--accent);
 
 	font-family:
 		-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Helvetica Neue', 'Segoe UI', sans-serif;
@@ -32,6 +33,7 @@
 	--border: #38383a;
 	--text-muted: #8e8e93;
 	--surface: #2c2c2e;
+	--series: #6f88ff;
 }
 
 body {
