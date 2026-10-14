@@ -1,12 +1,12 @@
 {
-	"name": "ui",
+	"name": "inference-ui",
 	"private": true,
 	"version": "0.0.1",
 	"type": "module",
 	"scripts": {
 		"dev": "vite dev",
 		"build": "vite build",
-		"publish": "vite build && mkdir -p ../internal/master/static && rm -rf ../internal/master/static/* && cp -r ./build/* ../internal/master/static/",
+		"publish": "vite build && mkdir -p ../webui && rm -rf ../webui/* && cp -r ./build/* ../webui/",
 		"preview": "vite preview",
 		"prepare": "svelte-kit sync || echo ''",
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",

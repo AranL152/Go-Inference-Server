@@ -183,6 +183,7 @@ func main() {
 	mux.HandleFunc("/metrics", srv.handleMetrics)
 	(&jobStore{s: srv}).routes(mux)
 	mux.HandleFunc("GET /api/system", startSysMonitor(engine).handleSystem)
+	mux.Handle("/", uiHandler())
 	// net/http/pprof registers on the default mux; expose it through ours so
 	// `go tool pprof http://.../debug/pprof/{profile,allocs}` works.
 	mux.Handle("/debug/pprof/", http.DefaultServeMux)

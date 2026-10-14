@@ -1,0 +1,1 @@
+import"../chunks/DsnmJJEf.js";import"../chunks/DG3Q6eqt.js";import{h as r,i as o}from"../chunks/CnzK6ke0.js";var p=r('<p class="text-sm text-[var(--text-muted)]">Inference server UI</p>');function s(t){var e=p();o(t,e)}export{s as component};
