@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log"
 	"mime"
 	"net/http"
 	"os"
@@ -161,6 +162,7 @@ func (st *jobStore) start(source, dir, tmpDir string, classes []string) (*job, e
 	st.mu.Lock()
 	st.jobs = append([]*job{j}, st.jobs...)
 	st.mu.Unlock()
+	log.Printf("job %s started: %d images from %s", j.ID, j.Total, source)
 	go st.run(j)
 	return j, nil
 }
@@ -192,6 +194,8 @@ func (st *jobStore) run(j *job) {
 		j.Status = "cancelled"
 	}
 	j.mu.Unlock()
+	v := j.view()
+	log.Printf("job %s %s: %d images, %d objects, %.0f img/s", j.ID, v.Status, v.Done, v.Objects, v.Rate)
 	st.save(j)
 }
 
