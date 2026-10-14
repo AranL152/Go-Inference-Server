@@ -24,6 +24,11 @@ that number is measured rather than claimed.
   a `DeviceTensor` (~90 lines), wired in through a `go.mod` replace
 - `loadtest/` — closed-loop and open-loop load generator with nvidia-smi sampling
 - `convert_fp16.py` — fp32 to fp16 model conversion
+- `yolo.go`, `detect.go` — YOLOX letterbox preprocessing, box decoding and NMS
+- `jobs.go` — dataset detection jobs behind the web UI
+- `sysstats.go` — live GPU, CPU, memory and pipeline samples for the UI
+- `ui/` — Svelte web UI, built into `webui/` and embedded in the binary
+- `export_yolox.py` — YOLOX-S export with a dynamic batch dimension
 
 ## Endpoints
 
@@ -34,6 +39,9 @@ that number is measured rather than claimed.
 | `GET /stats` | per-stage timing averages (`?reset=1` to zero between load levels) |
 | `GET /metrics` | Prometheus exposition: pipeline counters, latency histogram, decoder pools, Go runtime |
 | `/debug/pprof/` | live CPU and allocation profiles |
+| `/` | web UI (detector models) |
+| `/api/jobs` | start, list, cancel and page through dataset detection jobs |
+| `/api/system` | GPU, CPU, memory and pipeline samples, last 120 seconds |
 
 ## Running it
 
@@ -66,6 +74,41 @@ cd loadtest && go build .
 
 Use at least ~48k requests per level. Shorter runs finish inside the GPU's
 boost-clock ramp and read low.
+
+## Object detection demo
+
+The server also runs a detector. With a detector model, `/predict` returns
+boxes instead of a class, and the web UI at `/` has three tabs:
+
+- **Detect**: point it at a folder of JPEGs on the server, or upload images
+  or a whole folder, and list the classes to sort into (blank means all 80
+  COCO classes). Each job shows a live progress bar.
+- **Results**: images grouped by detected class with per-category counts and
+  boxes drawn on each image.
+- **Performance**: a Task Manager style view of GPU utilization, VRAM, power,
+  clocks, every CPU core, memory, throughput, latency and batch size.
+
+```bash
+./demo.sh                     # YOLOX-S on TensorRT FP16, UI at http://localhost:8080
+curl -X POST --data-binary @testdata/street.jpg localhost:8080/predict
+# {"width":768,"height":576,"detections":[{"class_name":"bicycle","confidence":0.95,"box":[124,120,560,421]}, ...]}
+```
+
+The model is YOLOX-S (Megvii, Apache-2.0), exported by `export_yolox.py` with
+a dynamic batch dimension and box decoding inside the graph. Throughput over
+all 5,000 COCO val2017 images, end to end (file read, JPEG decode, letterbox,
+inference, NMS):
+
+| Configuration | images/s |
+|---|---|
+| CUDA FP32, 1 lane | 178 |
+| TensorRT FP16 | 560 |
+| + device-binding | 696 |
+| + 3 infer lanes, 256 job workers | 996 |
+| + letterbox column tables and a no-resize fast path | 1,173 |
+
+The UI is adapted from [ToyReduce](https://github.com/JasonLovesDoggo/toyreduce)
+by Jason Cameron, used with permission. Rebuild it with `cd ui && pnpm install && pnpm run publish`.
 
 ## How it works
 
