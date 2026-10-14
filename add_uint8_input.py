@@ -4,7 +4,8 @@
 #   uint8 N x 3 x H x W BGR in then Cast to float which YOLOX expects as is
 # python add_uint8_input.py resnet IN.onnx OUT.onnx
 #   uint8 N x 224 x 224 x 3 RGB in which is the raw rgb request body byte for byte
-#   then Transpose to NCHW and Cast and ImageNet normalize
+#   then Cast and Transpose to NCHW and ImageNet normalize
+# Cast comes first because TensorRT rejects uint8 intermediate tensors
 import sys
 
 import numpy as np
@@ -32,9 +33,9 @@ elif kind == "resnet":
     bias = (-mean / std).reshape(1, 3, 1, 1)
     inits = [numpy_helper.from_array(scale, "u8_scale"), numpy_helper.from_array(bias, "u8_bias")]
     nodes = [
-        helper.make_node("Transpose", [name], ["u8_nchw"], perm=[0, 3, 1, 2]),
-        helper.make_node("Cast", ["u8_nchw"], ["u8_f32"], to=TensorProto.FLOAT),
-        helper.make_node("Mul", ["u8_f32", "u8_scale"], ["u8_scaled"]),
+        helper.make_node("Cast", [name], ["u8_f32"], to=TensorProto.FLOAT),
+        helper.make_node("Transpose", ["u8_f32"], ["u8_nchw"], perm=[0, 3, 1, 2]),
+        helper.make_node("Mul", ["u8_nchw", "u8_scale"], ["u8_scaled"]),
         helper.make_node("Add", ["u8_scaled", "u8_bias"], [inner]),
     ]
 else:
