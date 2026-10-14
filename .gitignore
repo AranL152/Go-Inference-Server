@@ -17,3 +17,6 @@
 
 # TensorRT engine cache
 /trt_cache/
+
+# Saved detection jobs and uploads
+/jobs/

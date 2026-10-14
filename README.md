@@ -25,7 +25,8 @@ that number is measured rather than claimed.
 - `loadtest/` — closed-loop and open-loop load generator with nvidia-smi sampling
 - `convert_fp16.py` — fp32 to fp16 model conversion
 - `yolo.go`, `detect.go` — YOLOX letterbox preprocessing, box decoding and NMS
-- `jobs.go` — dataset detection jobs behind the web UI
+- `jobs.go`, `jobs_persist.go` — dataset detection jobs behind the web UI, saved
+  to `jobs/` so results and uploads survive restarts (`-jobs-dir`)
 - `sysstats.go` — live GPU, CPU, memory and pipeline samples for the UI
 - `ui/` — Svelte web UI, built into `webui/` and embedded in the binary
 - `export_yolox.py` — YOLOX-S export with a dynamic batch dimension

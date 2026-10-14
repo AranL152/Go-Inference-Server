@@ -84,6 +84,7 @@ func (j *job) view() jobView {
 
 type jobStore struct {
 	s    *server
+	dir  string // where finished jobs and uploads are kept or empty for memory only
 	mu   sync.Mutex
 	jobs []*job
 }
@@ -191,6 +192,7 @@ func (st *jobStore) run(j *job) {
 		j.Status = "cancelled"
 	}
 	j.mu.Unlock()
+	st.save(j)
 }
 
 func (st *jobStore) process(j *job, i int) {
@@ -288,7 +290,7 @@ func (st *jobStore) handleUpload(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "expected multipart form")
 		return
 	}
-	dir, err := os.MkdirTemp("", "detect-upload-")
+	dir, err := os.MkdirTemp(st.dir, "upload-")
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
