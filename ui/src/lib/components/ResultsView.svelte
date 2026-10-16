@@ -2,6 +2,7 @@
 	import { getContext, untrack } from 'svelte';
 	import type { Context } from 'svelte-simple-modal';
 	import { api, type Category, type Job, type ResultItem } from '$lib/api';
+	import { formatDate } from '$lib/utils/date';
 	import DetectionImage from './DetectionImage.svelte';
 	import ImageDetails from './ImageDetails.svelte';
 
@@ -83,10 +84,10 @@
 							cls = '';
 							onSelectJob(e.currentTarget.value);
 						}}
-						class="max-w-full min-w-0 rounded-lg border border-[var(--border)] bg-[var(--bg)] py-1.5 pr-8 pl-3 font-mono text-sm text-[var(--fg)] focus:border-[var(--accent)] focus:outline-none"
+						class="max-w-full min-w-0 rounded-lg border border-[var(--border)] bg-[var(--bg)] py-1.5 pr-8 pl-3 text-sm text-[var(--fg)] focus:border-[var(--accent)] focus:outline-none"
 					>
 						{#each jobs as j}
-							<option value={j.id}>{j.id.slice(0, 8)} · {j.source}</option>
+							<option value={j.id}>{formatDate(j.created_at)} · {j.source}</option>
 						{/each}
 					</select>
 				</div>
