@@ -63,149 +63,168 @@
 	let totalMB = $derived(files.reduce((n, f) => n + f.size, 0) / 1e6);
 </script>
 
-<div class="border border-[var(--border)] bg-[var(--surface)] p-8">
-	<h2 class="mb-6 text-lg font-semibold text-[var(--fg)]">Detect Objects</h2>
-
-	<form onsubmit={submit} class="space-y-6">
-		<div>
-			<div class="mb-2 flex gap-6 text-xs tracking-wider uppercase">
-				<button
-					type="button"
-					class="tab pb-1 {mode === 'path' ? 'active text-[var(--fg)]' : 'text-[var(--text-muted)]'}"
-					onclick={() => (mode = 'path')}>Server folder</button
-				>
-				<button
-					type="button"
-					class="tab pb-1 {mode === 'upload'
-						? 'active text-[var(--fg)]'
-						: 'text-[var(--text-muted)]'}"
-					onclick={() => (mode = 'upload')}>Upload images</button
-				>
-			</div>
-
-			{#if mode === 'path'}
-				<label for="path" class="mb-2 block text-xs text-[var(--text-muted)]">
-					Folder of JPEGs on the server, searched recursively
-				</label>
-				<input
-					id="path"
-					type="text"
-					bind:value={path}
-					placeholder="/home/you/datasets/val2017"
-					class="w-full border border-[var(--border)] bg-[var(--surface)] px-3 py-2 font-mono text-sm text-[var(--fg)] placeholder-[var(--text-muted)] focus:border-[var(--accent)] focus:outline-none"
-				/>
-			{:else}
-				<div
-					role="region"
-					aria-label="Drop images here"
-					ondragover={(e) => {
-						e.preventDefault();
-						dragging = true;
-					}}
-					ondragleave={() => (dragging = false)}
-					ondrop={onDrop}
-					class="border border-dashed p-8 text-center text-sm {dragging
-						? 'border-[var(--accent)] text-[var(--fg)]'
-						: 'border-[var(--border)] text-[var(--text-muted)]'}"
-				>
-					<p>Drop JPEG images here</p>
-					<div class="mt-4 flex justify-center gap-3">
-						<label
-							class="cursor-pointer border border-[var(--border)] px-3 py-1 text-xs tracking-wider text-[var(--fg)] uppercase hover:border-[var(--accent)]"
-						>
-							Choose files
-							<input
-								type="file"
-								accept="image/jpeg"
-								multiple
-								class="hidden"
-								onchange={(e) => addFiles(e.currentTarget.files)}
-							/>
-						</label>
-						<label
-							class="cursor-pointer border border-[var(--border)] px-3 py-1 text-xs tracking-wider text-[var(--fg)] uppercase hover:border-[var(--accent)]"
-						>
-							Choose folder
-							<input
-								type="file"
-								webkitdirectory
-								class="hidden"
-								onchange={(e) => addFiles(e.currentTarget.files)}
-							/>
-						</label>
-					</div>
-					{#if files.length > 0}
-						<p class="mt-4 text-[var(--fg)] tabular-nums">
-							{files.length} images · {totalMB.toFixed(1)} MB
-							<button
-								type="button"
-								class="ml-2 text-xs text-[var(--text-muted)] underline"
-								onclick={() => (files = [])}>clear</button
-							>
-						</p>
-					{/if}
-				</div>
-			{/if}
-		</div>
-
-		<div>
-			<label
-				for="classes"
-				class="mb-2 block text-xs tracking-wider text-[var(--text-muted)] uppercase"
-			>
-				Classes to sort into
-			</label>
-			<textarea
-				id="classes"
-				bind:value={classesText}
-				rows="2"
-				placeholder="person, car, dog   (leave empty for all {labels.length} classes)"
-				class="w-full border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-sm text-[var(--fg)] placeholder-[var(--text-muted)] focus:border-[var(--accent)] focus:outline-none"
-			></textarea>
-			<div class="mt-2 flex flex-wrap items-center gap-2 text-xs">
-				{#each Object.entries(presets) as [name, list]}
-					<button
-						type="button"
-						class="border border-[var(--border)] px-2 py-0.5 text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--fg)]"
-						onclick={() => (classesText = list.join(', '))}>{name}</button
-					>
-				{/each}
-				{#each classes as c}
-					<span
-						class="border px-2 py-0.5 {known.has(c)
-							? 'border-[var(--fg)] text-[var(--fg)]'
-							: 'border-red-500 text-red-600'}">{c}</span
-					>
-				{/each}
-			</div>
-			{#if unknown.length > 0}
-				<p class="mt-2 text-xs text-red-600">
-					Not in this model: {unknown.join(', ')}. The detector knows the {labels.length} COCO classes.
-				</p>
-			{/if}
-		</div>
-
-		{#if submitting && mode === 'upload'}
-			<div>
-				<div class="mb-1 text-xs text-[var(--text-muted)] tabular-nums">
-					Uploading {Math.round(uploadFrac * 100)}%
-				</div>
-				<div class="h-1 w-full bg-[var(--border)]">
-					<div class="h-1 bg-[var(--accent)]" style="width: {uploadFrac * 100}%"></div>
-				</div>
-			</div>
-		{/if}
-
-		{#if error}
-			<p class="text-sm text-red-600">{error}</p>
-		{/if}
-
-		<button
-			type="submit"
-			disabled={!canSubmit}
-			class="bg-[var(--fg)] px-6 py-2 text-[var(--bg)] transition-opacity hover:opacity-80 disabled:cursor-not-allowed disabled:opacity-30"
+{#snippet step(n: number, title: string)}
+	<div class="mb-3 flex items-center gap-3">
+		<span
+			class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[var(--accent-soft)] text-xs font-semibold text-[var(--accent)]"
+			>{n}</span
 		>
-			{submitting ? 'Starting...' : 'Run detection'}
-		</button>
+		<h3 class="text-sm font-semibold text-[var(--fg)]">{title}</h3>
+	</div>
+{/snippet}
+
+<section class="overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface)] shadow-sm">
+	<div class="border-b border-[var(--border)] px-5 py-3">
+		<h2 class="text-sm font-semibold text-[var(--fg)]">Detect Objects</h2>
+	</div>
+
+	<form onsubmit={submit}>
+		<div class="space-y-6 px-5 py-5">
+			<div>
+				{@render step(1, 'Source')}
+				<div class="mb-3 grid grid-cols-2 gap-3">
+					{#each [{ m: 'path', label: 'Server folder', d: 'M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z' }, { m: 'upload', label: 'Upload images', d: 'M12 16V4M7 9l5-5 5 5M4 20h16' }] as o}
+						<button
+							type="button"
+							onclick={() => (mode = o.m as 'path' | 'upload')}
+							class="flex items-center gap-3 rounded-xl border px-4 py-3 text-left text-sm {mode === o.m
+								? 'border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--fg)]'
+								: 'border-[var(--border)] text-[var(--text-muted)] hover:border-[var(--text-muted)]'}"
+						>
+							<svg viewBox="0 0 24 24" class="h-5 w-5 shrink-0 {mode === o.m ? 'text-[var(--accent)]' : ''}" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d={o.d} /></svg>
+							{o.label}
+						</button>
+					{/each}
+				</div>
+
+				{#if mode === 'path'}
+					<label for="path" class="mb-2 block text-xs text-[var(--text-muted)]">
+						Folder of JPEGs on the server, searched recursively
+					</label>
+					<input
+						id="path"
+						type="text"
+						bind:value={path}
+						placeholder="/home/you/datasets/val2017"
+						class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg)] px-3 py-2 font-mono text-sm text-[var(--fg)] placeholder-[var(--text-muted)] focus:border-[var(--accent)] focus:outline-none"
+					/>
+				{:else}
+					<div
+						role="region"
+						aria-label="Drop images here"
+						ondragover={(e) => {
+							e.preventDefault();
+							dragging = true;
+						}}
+						ondragleave={() => (dragging = false)}
+						ondrop={onDrop}
+						class="rounded-xl border-2 border-dashed px-6 py-8 text-center text-sm {dragging
+							? 'border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--fg)]'
+							: 'border-[var(--border)] bg-[var(--bg)] text-[var(--text-muted)]'}"
+					>
+						<p>Drop JPEG images here</p>
+						<div class="mt-4 flex justify-center gap-3">
+							<label
+								class="cursor-pointer rounded-full border border-[var(--border)] bg-[var(--surface)] px-3 py-1 text-xs text-[var(--fg)] hover:border-[var(--accent)]"
+							>
+								Choose files
+								<input
+									type="file"
+									accept="image/jpeg"
+									multiple
+									class="hidden"
+									onchange={(e) => addFiles(e.currentTarget.files)}
+								/>
+							</label>
+							<label
+								class="cursor-pointer rounded-full border border-[var(--border)] bg-[var(--surface)] px-3 py-1 text-xs text-[var(--fg)] hover:border-[var(--accent)]"
+							>
+								Choose folder
+								<input
+									type="file"
+									webkitdirectory
+									class="hidden"
+									onchange={(e) => addFiles(e.currentTarget.files)}
+								/>
+							</label>
+						</div>
+						{#if files.length > 0}
+							<p class="mt-4 text-[var(--fg)] tabular-nums">
+								{files.length} images · {totalMB.toFixed(1)} MB
+								<button
+									type="button"
+									class="ml-2 text-xs text-[var(--text-muted)] underline"
+									onclick={() => (files = [])}>clear</button
+								>
+							</p>
+						{/if}
+					</div>
+				{/if}
+			</div>
+
+			<div>
+				{@render step(2, 'Classes to sort into')}
+				<div class="mb-2 flex flex-wrap gap-2 text-xs">
+					{#each Object.entries(presets) as [name, list]}
+						<button
+							type="button"
+							class="rounded-full bg-[var(--bg)] px-3 py-1 text-[var(--fg)] hover:bg-[var(--accent-soft)] hover:text-[var(--accent)]"
+							onclick={() => (classesText = list.join(', '))}>+ {name}</button
+						>
+					{/each}
+				</div>
+				<textarea
+					id="classes"
+					bind:value={classesText}
+					rows="2"
+					placeholder="person, car, dog   (leave empty for all {labels.length} classes)"
+					class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-sm text-[var(--fg)] placeholder-[var(--text-muted)] focus:border-[var(--accent)] focus:outline-none"
+				></textarea>
+				{#if classes.length > 0}
+					<div class="mt-2 flex flex-wrap gap-1.5 text-xs">
+						{#each classes as c}
+							<span
+								class="rounded-md px-2 py-0.5 {known.has(c)
+									? 'bg-[var(--accent-soft)] text-[var(--accent)]'
+									: 'bg-red-500/10 text-red-600'}">{c}</span
+							>
+						{/each}
+					</div>
+				{/if}
+				{#if unknown.length > 0}
+					<p class="mt-2 text-xs text-red-600">
+						Not in this model: {unknown.join(', ')}. The detector knows the {labels.length} COCO classes.
+					</p>
+				{/if}
+			</div>
+
+			{#if submitting && mode === 'upload'}
+				<div>
+					<div class="mb-1 text-xs text-[var(--text-muted)] tabular-nums">
+						Uploading {Math.round(uploadFrac * 100)}%
+					</div>
+					<div class="h-1.5 w-full overflow-hidden rounded-full bg-[var(--border)]">
+						<div class="h-full rounded-full bg-[var(--accent)]" style="width: {uploadFrac * 100}%"></div>
+					</div>
+				</div>
+			{/if}
+
+			{#if error}
+				<p class="text-sm text-red-600">{error}</p>
+			{/if}
+		</div>
+
+		<div class="flex items-center justify-between gap-4 border-t border-[var(--border)] bg-[var(--bg)] px-5 py-3">
+			<span class="text-xs text-[var(--text-muted)]">
+				{classes.length ? `${classes.length} classes` : `all ${labels.length} classes`}
+			</span>
+			<button
+				type="submit"
+				disabled={!canSubmit}
+				class="rounded-full bg-[var(--accent)] px-5 py-2 text-sm font-medium text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+			>
+				{submitting ? 'Starting...' : 'Run detection'}
+			</button>
+		</div>
 	</form>
-</div>
+</section>

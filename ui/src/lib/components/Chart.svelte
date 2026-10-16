@@ -13,6 +13,7 @@
 		height?: number;
 		window?: number;
 		compact?: boolean;
+		frame?: boolean;
 		stacked?: boolean;
 		format?: (v: number) => string;
 	}
@@ -24,6 +25,7 @@
 		height = 150,
 		window = 120,
 		compact = false,
+		frame = true,
 		stacked = false,
 		format = (v: number) =>
 			v >= 100 || Number.isInteger(v) ? Math.round(v).toLocaleString() : v.toFixed(1)
@@ -103,8 +105,8 @@
 					>{clock(t[len - 1])}</text
 				>
 			{/if}
-		{:else}
-			<rect x="0" y="0" {width} {height} fill="none" stroke="var(--border)" />
+		{:else if frame}
+			<rect x="0" y="0" {width} {height} rx="8" fill="none" stroke="var(--border)" />
 		{/if}
 
 		{#if stacked}
@@ -137,7 +139,7 @@
 		<div class="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-[var(--text-muted)]">
 			{#each series as s}
 				<span class="flex items-center gap-1.5">
-					<span class="inline-block h-2 w-3" style="background: {s.color}"></span>{s.name}
+					<span class="inline-block h-2 w-3 rounded-sm" style="background: {s.color}"></span>{s.name}
 				</span>
 			{/each}
 		</div>
@@ -145,7 +147,7 @@
 
 	{#if hover !== null}
 		<div
-			class="pointer-events-none absolute top-0 z-10 border border-[var(--border)] bg-[var(--surface)] px-2 py-1 text-xs whitespace-nowrap text-[var(--fg)] shadow-sm"
+			class="pointer-events-none absolute top-0 z-10 rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 py-1 text-xs whitespace-nowrap text-[var(--fg)] shadow-sm"
 			style="left: {Math.min(x(hover) + 8, Math.max(0, width - 150))}px"
 		>
 			<div class="text-[var(--text-muted)]">{t[hover] ? clock(t[hover]) : `${len - 1 - hover}s ago`}</div>

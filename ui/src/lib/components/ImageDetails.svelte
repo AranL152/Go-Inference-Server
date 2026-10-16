@@ -23,7 +23,7 @@
 		</div>
 		<button
 			onclick={() => close()}
-			class="border border-[var(--border)] px-3 py-1 text-xs tracking-wider text-[var(--fg)] uppercase hover:opacity-60"
+			class="rounded-full border border-[var(--border)] px-3 py-1 text-xs tracking-wider text-[var(--fg)] uppercase hover:opacity-60"
 			>Close</button
 		>
 	</div>

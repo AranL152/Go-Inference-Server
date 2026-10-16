@@ -46,7 +46,7 @@
 		{#each profiles as x}
 			<button
 				onclick={() => (chosen = x.model)}
-				class="border px-2 py-0.5 font-mono {x.model === p?.model
+				class="rounded-full border px-2 py-0.5 font-mono {x.model === p?.model
 					? 'border-[var(--accent)] text-[var(--fg)]'
 					: 'border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--fg)]'}">{x.model}</button
 			>
@@ -83,7 +83,7 @@
 						<td class="py-1.5 pr-3 text-right">{k.ms_per_batch.toFixed(3)}</td>
 						<td class="py-1.5 pr-3">
 							<div class="flex items-center gap-2">
-								<div class="h-1.5 flex-1 bg-[var(--border)]">
+								<div class="h-1.5 flex-1 overflow-hidden rounded-full bg-[var(--border)]">
 									<div class="h-1.5 bg-[var(--series)]" style="width: {k.share_pct}%"></div>
 								</div>
 								<span class="w-10 text-right">{k.share_pct}%</span>
