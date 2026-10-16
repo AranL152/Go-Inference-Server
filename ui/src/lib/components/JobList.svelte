@@ -39,7 +39,6 @@
 					<div class="flex items-start justify-between gap-4">
 						<div class="min-w-0 flex-1">
 							<div class="mb-2 flex items-center gap-3">
-								<span class="font-mono text-xs text-[var(--text-muted)]">{job.id.slice(0, 8)}</span>
 								<span
 									class="rounded-full border px-2 py-0.5 text-xs tracking-wider uppercase {statusColor(job.status)}"
 								>
