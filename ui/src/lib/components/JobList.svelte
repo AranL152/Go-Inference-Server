@@ -23,7 +23,7 @@
 	const percent = (j: Job) => (j.total ? Math.round((j.done / j.total) * 100) : 0);
 </script>
 
-<div class="border border-[var(--border)] bg-[var(--surface)] p-8">
+<div class="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-8 shadow-sm">
 	<h2 class="mb-6 text-lg font-semibold text-[var(--fg)]">Jobs</h2>
 
 	{#if jobs.length === 0}
@@ -34,14 +34,14 @@
 		<div class="space-y-3">
 			{#each jobs as job (job.id)}
 				<div
-					class="border border-[var(--border)] bg-[var(--surface)] p-4 transition-colors hover:border-[var(--accent)]"
+					class="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 shadow-sm transition-colors hover:border-[var(--accent)]"
 				>
 					<div class="flex items-start justify-between gap-4">
 						<div class="min-w-0 flex-1">
 							<div class="mb-2 flex items-center gap-3">
 								<span class="font-mono text-xs text-[var(--text-muted)]">{job.id.slice(0, 8)}</span>
 								<span
-									class="border px-2 py-0.5 text-xs tracking-wider uppercase {statusColor(job.status)}"
+									class="rounded-full border px-2 py-0.5 text-xs tracking-wider uppercase {statusColor(job.status)}"
 								>
 									{job.status}
 								</span>
@@ -67,7 +67,7 @@
 										<span class="text-red-600">{job.failed} failed</span>
 									{/if}
 								</div>
-								<div class="h-1 w-full bg-[var(--border)]">
+								<div class="h-1 w-full overflow-hidden rounded-full bg-[var(--border)]">
 									<div
 										class="h-1 bg-[var(--accent)] transition-all"
 										style="width: {percent(job)}%"
@@ -81,14 +81,14 @@
 								{#if job.status === 'running'}
 									<button
 										onclick={() => onCancel(job.id)}
-										class="border border-[var(--border)] px-3 py-1 text-xs tracking-wider text-[var(--fg)] uppercase hover:border-red-500"
+										class="rounded-full border border-[var(--border)] px-3 py-1 text-xs tracking-wider text-[var(--fg)] uppercase hover:border-red-500"
 									>
 										Cancel
 									</button>
 								{/if}
 								<button
 									onclick={() => onViewResults(job.id)}
-									class="border border-[var(--border)] px-3 py-1 text-xs tracking-wider text-[var(--fg)] uppercase hover:border-[var(--accent)]"
+									class="rounded-full border border-[var(--border)] px-3 py-1 text-xs tracking-wider text-[var(--fg)] uppercase hover:border-[var(--accent)]"
 								>
 									View Results
 								</button>

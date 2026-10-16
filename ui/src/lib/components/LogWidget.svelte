@@ -41,9 +41,9 @@
 	<input
 		bind:value={filter}
 		placeholder="Filter log lines"
-		class="mb-3 w-full border border-[var(--border)] bg-[var(--surface)] px-3 py-1.5 text-xs text-[var(--fg)] placeholder-[var(--text-muted)] focus:border-[var(--accent)] focus:outline-none"
+		class="mb-3 w-full rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-1.5 text-xs text-[var(--fg)] placeholder-[var(--text-muted)] focus:border-[var(--accent)] focus:outline-none"
 	/>
-	<div bind:this={box} class="h-64 overflow-y-auto border border-[var(--border)] font-mono text-xs">
+	<div bind:this={box} class="h-64 overflow-y-auto rounded-lg border border-[var(--border)] font-mono text-xs">
 		<table class="w-full">
 			<thead class="sticky top-0 bg-[var(--surface)]">
 				<tr class="border-b border-[var(--border)] text-left text-[var(--text-muted)]">
