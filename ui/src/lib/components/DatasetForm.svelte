@@ -105,7 +105,7 @@
 						id="path"
 						type="text"
 						bind:value={path}
-						placeholder="/home/you/datasets/val2017"
+						placeholder="Enter a folder path"
 						class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg)] px-3 py-2 font-mono text-sm text-[var(--fg)] placeholder-[var(--text-muted)] focus:border-[var(--accent)] focus:outline-none"
 					/>
 				{:else}
