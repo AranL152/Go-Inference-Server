@@ -3,7 +3,9 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -26,7 +28,7 @@ import (
 
 const (
 	profileDir   = "profiles"
-	keepCaptures = 5
+	keepCaptures = 20
 )
 
 // captureMu allows one trace or CPU profile at a time, as the runtime does
@@ -274,13 +276,13 @@ func saveSummary(name string, v any) {
 	}
 }
 
-// handleTraceCapture records an execution trace of the running server and
+var errCaptureBusy = errors.New("a capture is already running")
+
+// captureTrace records an execution trace of the running server for d and
 // returns its per stage summary
-func handleTraceCapture(w http.ResponseWriter, r *http.Request) {
-	d := captureSeconds(r, 2, 10)
+func captureTrace(ctx context.Context, d time.Duration) (*traceSummary, error) {
 	if !captureMu.TryLock() {
-		writeError(w, http.StatusConflict, "a capture is already running")
-		return
+		return nil, errCaptureBusy
 	}
 	defer captureMu.Unlock()
 	os.MkdirAll(profileDir, 0o755)
@@ -288,32 +290,44 @@ func handleTraceCapture(w http.ResponseWriter, r *http.Request) {
 	name := "trace-" + now.Format("20060102-150405") + ".out"
 	f, err := os.Create(filepath.Join(profileDir, name))
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, err
 	}
 	defer f.Close()
 	if err := trace.Start(f); err != nil {
-		writeError(w, http.StatusConflict, "could not start trace: "+err.Error())
-		return
+		return nil, err
 	}
 	select {
 	case <-time.After(d):
-	case <-r.Context().Done():
+	case <-ctx.Done():
 	}
 	trace.Stop()
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, err
 	}
 	sum, err := analyzeTrace(f)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not read trace: "+err.Error())
-		return
+		return nil, fmt.Errorf("could not read trace: %w", err)
 	}
 	sum.File, sum.Taken = name, now
-	saveSummary("trace-latest.json", sum)
 	pruneCaptures("trace")
+	return sum, nil
+}
+
+func handleTraceCapture(w http.ResponseWriter, r *http.Request) {
+	sum, err := captureTrace(r.Context(), captureSeconds(r, 2, 10))
+	if err != nil {
+		writeError(w, captureStatus(err), err.Error())
+		return
+	}
+	saveSummary("trace-latest.json", sum)
 	writeJSON(w, http.StatusOK, sum)
+}
+
+func captureStatus(err error) int {
+	if errors.Is(err, errCaptureBusy) {
+		return http.StatusConflict
+	}
+	return http.StatusInternalServerError
 }
 
 // handleLatest returns the newest saved summary of one capture kind
@@ -424,13 +438,11 @@ func analyzeCPUProfile(r io.Reader, wall time.Duration) (*cpuSummary, error) {
 	return sum, nil
 }
 
-// handleCPUCapture records a CPU profile of the running server and returns
+// captureCPU records a CPU profile of the running server for d and returns
 // where the CPU went by stage and function
-func handleCPUCapture(w http.ResponseWriter, r *http.Request) {
-	d := captureSeconds(r, 3, 30)
+func captureCPU(ctx context.Context, d time.Duration) (*cpuSummary, error) {
 	if !captureMu.TryLock() {
-		writeError(w, http.StatusConflict, "a capture is already running")
-		return
+		return nil, errCaptureBusy
 	}
 	defer captureMu.Unlock()
 	os.MkdirAll(profileDir, 0o755)
@@ -438,32 +450,37 @@ func handleCPUCapture(w http.ResponseWriter, r *http.Request) {
 	name := "cpu-" + now.Format("20060102-150405") + ".pb.gz"
 	f, err := os.Create(filepath.Join(profileDir, name))
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, err
 	}
 	defer f.Close()
 	if err := pprof.StartCPUProfile(f); err != nil {
-		writeError(w, http.StatusConflict, "could not start CPU profile: "+err.Error())
-		return
+		return nil, err
 	}
 	start := time.Now()
 	select {
 	case <-time.After(d):
-	case <-r.Context().Done():
+	case <-ctx.Done():
 	}
 	pprof.StopCPUProfile()
 	wall := time.Since(start)
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, err
 	}
 	sum, err := analyzeCPUProfile(f, wall)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not read profile: "+err.Error())
-		return
+		return nil, fmt.Errorf("could not read profile: %w", err)
 	}
 	sum.File, sum.Taken = name, now
-	saveSummary("cpu-latest.json", sum)
 	pruneCaptures("cpu")
+	return sum, nil
+}
+
+func handleCPUCapture(w http.ResponseWriter, r *http.Request) {
+	sum, err := captureCPU(r.Context(), captureSeconds(r, 3, 30))
+	if err != nil {
+		writeError(w, captureStatus(err), err.Error())
+		return
+	}
+	saveSummary("cpu-latest.json", sum)
 	writeJSON(w, http.StatusOK, sum)
 }
