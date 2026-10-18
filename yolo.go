@@ -42,61 +42,112 @@ func chooseScaleLong(w, h, target int) (num, den int) {
 	return 1, 1
 }
 
-// letterboxInto resizes img to fit 640x640 at the top left and pads the rest
+// letterboxInto resizes img to fit 640x640 at the top left and pads the rest.
+// Bilinear in 8 bit fixed point: each source row is resampled across once into
+// a cached row, and output rows blend the two cached rows they fall between.
 func letterboxInto(img *image.RGBA, out []byte) float32 {
 	sw, sh := img.Rect.Dx(), img.Rect.Dy()
 	r := min(float32(letterboxSize)/float32(sw), float32(letterboxSize)/float32(sh))
 	rw, rh := int(float32(sw)*r), int(float32(sh)*r)
 	const plane = letterboxSize * letterboxSize
 	b, g, rd := out[:plane], out[plane:2*plane], out[2*plane:3*plane]
+	for y := rh; y < letterboxSize; y++ {
+		i := y * letterboxSize
+		fill(b[i:i+letterboxSize], g[i:i+letterboxSize], rd[i:i+letterboxSize])
+	}
+	if rw == sw && rh == sh {
+		for y := 0; y < rh; y++ {
+			i := y * letterboxSize
+			fill(b[i+rw:i+letterboxSize], g[i+rw:i+letterboxSize], rd[i+rw:i+letterboxSize])
+			row := img.Pix[y*img.Stride : y*img.Stride+rw*4]
+			for x := 0; x < rw; x++ {
+				rd[i+x], g[i+x], b[i+x] = row[x*4], row[x*4+1], row[x*4+2]
+			}
+		}
+		return r
+	}
 
-	// source column offsets and weights are the same for every row
+	// source columns and weights out of 256 are the same for every row
 	var x0s, x1s [letterboxSize]int
-	var wxs [letterboxSize]float32
+	var wxs [letterboxSize]int
 	inv := 1 / r
 	for x := 0; x < rw; x++ {
 		fx := (float32(x)+0.5)*inv - 0.5
 		x0 := max(floor32(fx), 0)
 		x0s[x], x1s[x] = x0*4, min(x0+1, sw-1)*4
-		wxs[x] = max(fx-float32(x0), 0)
+		wxs[x] = min(int(max(fx-float32(x0), 0)*256+0.5), 256)
 	}
-	for y := 0; y < letterboxSize; y++ {
+
+	// two cached source rows resampled across, as RGB planes of value*256
+	var cache [2][3][letterboxSize]uint16
+	cached := [2]int{-1, -1}
+	load := func(slot, y int) {
+		row := img.Pix[y*img.Stride:]
+		cr, cg, cb := cache[slot][0][:rw], cache[slot][1][:rw], cache[slot][2][:rw]
+		xs0, xs1, ws := x0s[:len(cr)], x1s[:len(cr)], wxs[:len(cr)]
+		for x := range cr {
+			p, q, w := row[xs0[x]:xs0[x]+3], row[xs1[x]:xs1[x]+3], ws[x]
+			w0 := 256 - w
+			cr[x] = uint16(int(p[0])*w0 + int(q[0])*w)
+			cg[x] = uint16(int(p[1])*w0 + int(q[1])*w)
+			cb[x] = uint16(int(p[2])*w0 + int(q[2])*w)
+		}
+		cached[slot] = y
+	}
+	slotOf := func(y int) int {
+		switch y {
+		case cached[0]:
+			return 0
+		case cached[1]:
+			return 1
+		}
+		return -1
+	}
+
+	for y := 0; y < rh; y++ {
 		i := y * letterboxSize
-		if y >= rh {
-			fill(b[i:i+letterboxSize], g[i:i+letterboxSize], rd[i:i+letterboxSize])
-			continue
-		}
 		fill(b[i+rw:i+letterboxSize], g[i+rw:i+letterboxSize], rd[i+rw:i+letterboxSize])
-		if rw == sw && rh == sh {
-			row := img.Pix[y*img.Stride:]
-			for x := 0; x < rw; x++ {
-				p := row[x*4 : x*4+3]
-				rd[i+x], g[i+x], b[i+x] = p[0], p[1], p[2]
-			}
-			continue
-		}
 		fy := (float32(y)+0.5)*inv - 0.5
 		y0 := max(floor32(fy), 0)
-		wy := max(fy-float32(y0), 0)
-		row0 := img.Pix[y0*img.Stride:]
-		row1 := img.Pix[min(y0+1, sh-1)*img.Stride:]
-		for x := 0; x < rw; x++ {
-			a0, a1, wx := x0s[x], x1s[x], wxs[x]
-			for c, dst := range [3][]byte{rd, g, b} {
-				top := float32(row0[a0+c]) + (float32(row0[a1+c])-float32(row0[a0+c]))*wx
-				bot := float32(row1[a0+c]) + (float32(row1[a1+c])-float32(row1[a0+c]))*wx
-				dst[i+x] = uint8(top + (bot-top)*wy + 0.5)
+		y1 := min(y0+1, sh-1)
+		wy := min(int(max(fy-float32(y0), 0)*256+0.5), 256)
+		s0 := slotOf(y0)
+		if s0 < 0 {
+			s0 = 0
+			if cached[0] == y1 {
+				s0 = 1
 			}
+			load(s0, y0)
+		}
+		s1 := slotOf(y1)
+		if s1 < 0 {
+			s1 = 1 - s0
+			load(s1, y1)
+		}
+		wy0 := 256 - wy
+		dr := rd[i : i+rw]
+		dg, db := g[i:i+len(dr)], b[i:i+len(dr)]
+		tr, tg, tb := cache[s0][0][:len(dr)], cache[s0][1][:len(dr)], cache[s0][2][:len(dr)]
+		br, bg, bb := cache[s1][0][:len(dr)], cache[s1][1][:len(dr)], cache[s1][2][:len(dr)]
+		for x := range dr {
+			dr[x] = uint8((int(tr[x])*wy0 + int(br[x])*wy + 1<<15) >> 16)
+			dg[x] = uint8((int(tg[x])*wy0 + int(bg[x])*wy + 1<<15) >> 16)
+			db[x] = uint8((int(tb[x])*wy0 + int(bb[x])*wy + 1<<15) >> 16)
 		}
 	}
 	return r
 }
 
+var padRow = func() (p [letterboxSize]byte) {
+	for i := range p {
+		p[i] = letterboxPad
+	}
+	return
+}()
+
 func fill(planes ...[]byte) {
 	for _, p := range planes {
-		for i := range p {
-			p[i] = letterboxPad
-		}
+		copy(p, padRow[:len(p)])
 	}
 }
 
