@@ -10,10 +10,6 @@
 	import Batching from './Batching.svelte';
 	import GoRuntime from './GoRuntime.svelte';
 	import GpuTimeline from './GpuTimeline.svelte';
-	import { page } from '$app/state';
-	import { goto } from '$app/navigation';
-	import { api, type Job } from '$lib/api';
-	import { formatDate } from '$lib/utils/date';
 	import type { Gpu, RunPerf, Sample, ServerConfig } from '$lib/stats';
 
 	const ranges = [
@@ -25,10 +21,9 @@
 	let liveSamples = $state<Sample[]>([]);
 	let cfg = $state<ServerConfig | null>(null);
 	let error = $state('');
-	let jobs = $state<Job[]>([]);
 
-	// ?run=<job id> shows that job's recorded run instead of the live server
-	const runId = $derived(page.url.searchParams.get('run') ?? '');
+	// the job run to show, picked in Results; empty shows the live server
+	let { runId = '' }: { runId?: string } = $props();
 	let run = $state<RunPerf | null>(null);
 	let runError = $state('');
 	$effect(() => {
@@ -47,11 +42,7 @@
 	});
 	const samples = $derived(runId ? (run?.samples ?? []) : liveSamples);
 	const win = $derived(runId ? Math.max(samples.length, 2) : range);
-	const runJob = $derived(jobs.find((j) => j.id === runId));
 
-	function pickRun(id: string) {
-		goto(`?tab=performance${id ? `&run=${id}` : ''}`, { keepFocus: true, noScroll: true });
-	}
 
 	async function poll() {
 		const since = liveSamples.at(-1)?.t ?? 0;
@@ -69,18 +60,10 @@
 			.then((r) => r.json())
 			.then((c) => (cfg = c))
 			.catch(() => {});
-		const loadJobs = () =>
-			api
-				.jobs()
-				.then((j) => (jobs = j))
-				.catch(() => {});
-		loadJobs();
 		poll();
 		const t = setInterval(poll, 1000);
-		const tj = setInterval(loadJobs, 5000);
 		return () => {
 			clearInterval(t);
-			clearInterval(tj);
 		};
 	});
 
@@ -229,17 +212,6 @@
 			{/each}
 		</div>
 		<div class="flex flex-wrap items-center gap-3">
-			<select
-				value={runId}
-				onchange={(e) => pickRun(e.currentTarget.value)}
-				class="max-w-72 rounded-lg border border-[var(--border)] bg-[var(--surface)] py-1 pr-8 pl-3 text-sm text-[var(--fg)] focus:border-[var(--accent)] focus:outline-none"
-			>
-				<option value="">Live</option>
-				{#each jobs as j}
-					<option value={j.id}>Run {formatDate(j.created_at)} · {j.source.split('/').at(-1)}</option
-					>
-				{/each}
-			</select>
 			{#if !runId}
 				<div
 					class="flex rounded-full bg-[var(--surface)] p-0.5 text-xs ring-1 ring-[var(--border)]"
@@ -272,14 +244,6 @@
 						1000
 					).toFixed(1)} s</span
 				>
-				{#if runJob}
-					<span class="font-mono">{runJob.source}</span>
-					<span
-						>{runJob.done.toLocaleString()} images · {Math.round(
-							runJob.images_per_sec
-						).toLocaleString()} img/s · {runJob.status}</span
-					>
-				{/if}
 			{/if}
 		</div>
 	{/if}

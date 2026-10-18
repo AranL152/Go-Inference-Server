@@ -6,25 +6,30 @@
 	import DatasetForm from '$lib/components/DatasetForm.svelte';
 	import JobList from '$lib/components/JobList.svelte';
 	import ResultsView from '$lib/components/ResultsView.svelte';
-	import PerformanceView from '$lib/components/PerformanceView.svelte';
+	import type { ResultsPane } from '$lib/components/ResultsView.svelte';
 
-	type Tab = 'detect' | 'results' | 'performance';
+	type Tab = 'detect' | 'results';
 	const heading: Record<Tab, { crumb: string; title: string }> = {
 		detect: { crumb: 'Detection', title: 'Run detection' },
-		results: { crumb: 'Detection', title: 'Results' },
-		performance: { crumb: 'Monitoring', title: 'Inference server dashboard' }
+		results: { crumb: 'Detection', title: 'Results' }
 	};
 
 	let config = $state<Config | null>(null);
 	let jobs = $state<Job[]>([]);
 	let error = $state('');
 
-	let activeTab = $derived<Tab>((page.url.searchParams.get('tab') as Tab) || 'detect');
-	let selectedJob = $derived(page.url.searchParams.get('job') || '');
+	// the old dashboard tab now opens the run's performance pane in Results
+	const q = $derived(page.url.searchParams);
+	let activeTab = $derived<Tab>(q.get('tab') === 'performance' ? 'results' : (q.get('tab') as Tab) || 'detect');
+	let selectedJob = $derived(q.get('job') || q.get('run') || '');
+	let pane = $derived<ResultsPane>(
+		q.get('tab') === 'performance' || q.get('pane') === 'performance' ? 'performance' : 'detections'
+	);
 	let h = $derived(heading[activeTab] ?? heading.detect);
 
-	function setTab(tab: Tab, job = '') {
-		goto(`?tab=${tab}${job ? `&job=${job}` : ''}`, { keepFocus: true, noScroll: true });
+	function setTab(tab: Tab, job = '', p: ResultsPane = 'detections') {
+		const params = `?tab=${tab}${job ? `&job=${job}` : ''}${p === 'performance' ? '&pane=performance' : ''}`;
+		goto(params, { keepFocus: true, noScroll: true });
 	}
 
 	async function refresh() {
@@ -97,8 +102,12 @@
 			<JobList {jobs} onCancel={cancel} onViewResults={(id) => setTab('results', id)} />
 		</div>
 	{:else if activeTab === 'results'}
-		<ResultsView {jobs} jobId={selectedJob} onSelectJob={(id) => setTab('results', id)} />
-	{:else}
-		<PerformanceView />
+		<ResultsView
+			{jobs}
+			jobId={selectedJob}
+			{pane}
+			onSelectJob={(id) => setTab('results', id, pane)}
+			onPane={(p) => setTab('results', selectedJob || jobs[0]?.id, p)}
+		/>
 	{/if}
 </div>

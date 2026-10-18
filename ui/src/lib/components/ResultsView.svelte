@@ -5,13 +5,17 @@
 	import { formatDate } from '$lib/utils/date';
 	import DetectionImage from './DetectionImage.svelte';
 	import ImageDetails from './ImageDetails.svelte';
+	import PerformanceView from './PerformanceView.svelte';
 
+	export type ResultsPane = 'detections' | 'performance';
 	interface Props {
 		jobs: Job[];
 		jobId: string;
+		pane: ResultsPane;
 		onSelectJob: (id: string) => void;
+		onPane: (pane: ResultsPane) => void;
 	}
-	let { jobs, jobId, onSelectJob }: Props = $props();
+	let { jobs, jobId, pane, onSelectJob, onPane }: Props = $props();
 	const { open } = getContext<Context>('simple-modal');
 
 	const PAGE = 48;
@@ -97,11 +101,16 @@
 				</div>
 				{#if job}
 					<div class="flex items-center gap-2">
-						<a
-							href="?tab=performance&run={id}"
-							class="rounded-full border border-[var(--border)] px-3 py-1 text-xs text-[var(--fg)] hover:border-[var(--accent)]"
-							>Run analysis</a
-						>
+						<div class="flex rounded-full bg-[var(--bg)] p-0.5 text-xs ring-1 ring-[var(--border)]">
+							{#each [['detections', 'Detections'], ['performance', 'Performance']] as [k, label]}
+								<button
+									onclick={() => onPane(k as ResultsPane)}
+									class="rounded-full px-3 py-1 {pane === k
+										? 'bg-[var(--accent)] text-white'
+										: 'text-[var(--text-muted)] hover:text-[var(--fg)]'}">{label}</button
+								>
+							{/each}
+						</div>
 						<span
 							class="rounded-full px-3 py-1 text-xs font-medium {job.status === 'running'
 								? 'bg-[var(--accent-soft)] text-[var(--accent)]'
@@ -122,6 +131,9 @@
 			{/if}
 		</section>
 
+		{#if pane === 'performance'}
+			<PerformanceView runId={id} />
+		{:else}
 		<div>
 			<div class="mb-2 text-xs font-semibold text-[var(--text-muted)]">Categories</div>
 			<div class="flex flex-wrap gap-2">
@@ -189,5 +201,6 @@
 				</div>
 			{/if}
 		</div>
+		{/if}
 	</div>
 {/if}

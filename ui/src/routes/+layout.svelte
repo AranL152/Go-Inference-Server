@@ -37,10 +37,6 @@
 				{ tab: 'detect', label: 'Run detection', icon: 'M4 7V5a1 1 0 0 1 1-1h2M17 4h2a1 1 0 0 1 1 1v2M20 17v2a1 1 0 0 1-1 1h-2M7 20H5a1 1 0 0 1-1-1v-2M9 9h6v6H9z' },
 				{ tab: 'results', label: 'Results', icon: 'M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z' }
 			]
-		},
-		{
-			group: 'Monitoring',
-			items: [{ tab: 'performance', label: 'Dashboard', icon: 'M4 19h16M7 16V10M12 16V5M17 16v-4' }]
 		}
 	];
 	let active = $derived(page.url.searchParams.get('tab') || 'detect');
