@@ -6,6 +6,8 @@
 		t: number;
 		text: string;
 	}
+	// a run passes its window in ms so only its own lines show
+	let { from = 0, to = 0 }: { from?: number; to?: number } = $props();
 	let lines = $state<Line[]>([]);
 	let filter = $state('');
 	let box: HTMLDivElement;
@@ -30,8 +32,11 @@
 		return () => clearInterval(t);
 	});
 
+	const inRun = $derived(from ? lines.filter((l) => l.t >= from - 1000 && l.t <= to + 2000) : lines);
+	// the server keeps 500 lines, so an older run's may have rotated out
+	const rotated = $derived(from > 0 && inRun.length === 0 && (lines[0]?.t ?? 0) > from);
 	const shown = $derived(
-		filter ? lines.filter((l) => l.text.toLowerCase().includes(filter.toLowerCase())) : lines
+		filter ? inRun.filter((l) => l.text.toLowerCase().includes(filter.toLowerCase())) : inRun
 	);
 	const time = (ms: number) =>
 		new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -61,7 +66,11 @@
 			</tbody>
 		</table>
 		{#if shown.length === 0}
-			<p class="p-4 text-center text-[var(--text-muted)]">No log lines{filter ? ' match' : ''}.</p>
+			<p class="p-4 text-center text-[var(--text-muted)]">
+				{rotated
+					? "This run's log lines have rotated out of the server's last 500."
+					: `No log lines${filter ? ' match' : from ? ' from this run' : ''}.`}
+			</p>
 		{/if}
 	</div>
 </div>

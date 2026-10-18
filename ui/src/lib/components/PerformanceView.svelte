@@ -589,7 +589,10 @@
 			{@render card('Goroutines', 'server concurrency', gor, true)}
 		</div>
 	{:else}
-		{#snippet logs()}<LogWidget />{/snippet}
-		{@render card('Server log', 'latest 500 lines', logs)}
+		{#snippet logs()}<LogWidget
+				from={run ? Date.parse(run.start) : 0}
+				to={run ? Date.parse(run.end) : 0}
+			/>{/snippet}
+		{@render card('Server log', runId ? 'lines logged during this run' : 'latest 500 lines', logs)}
 	{/if}
 </div>
