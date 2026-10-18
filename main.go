@@ -68,6 +68,7 @@ func main() {
 	deviceBinding := flag.Bool("device-binding", false, "run full batches through device-resident pre-bound I/O with pinned-host staging: engine-owned cudaMalloc buffers, H2D/D2H under engine control; takes precedence over -io-binding")
 	trt := flag.String("trt", "", "run the model through the TensorRT execution provider (fp16 allowed), caching built engines in this directory; needs TensorRT 10 on LD_LIBRARY_PATH and a model whose weights are initializers, not graph inputs (e.g. resnet18_op13.onnx or resnet18_int8.onnx)")
 	jobsDir := flag.String("jobs-dir", "jobs", "where detection job results and uploads are saved (empty keeps them in memory only)")
+	jobWorkersFlag := flag.Int("job-workers", jobWorkers, "images a dataset job keeps in flight at once")
 	confFlag := flag.Float64("conf", 0.3, "detector score threshold")
 	iouFlag := flag.Float64("iou", 0.45, "detector NMS IoU threshold")
 	trtInt8Flag := flag.Bool("trt-int8", false, "with -trt: also allow int8 kernels; use with a QDQ model from quantize_int8.py")
@@ -90,6 +91,7 @@ func main() {
 
 	log.Printf("loading model %s onto GPU via CUDA execution provider...", *modelPath)
 	numInferLanes = *inferLanes // must be set before NewEngine spawns the pipeline
+	setJobWorkers(*jobWorkersFlag)
 	useIoBinding = *ioBinding
 	useDeviceBinding = *deviceBinding
 	trtCacheDir, trtInt8 = *trt, *trtInt8Flag

@@ -23,10 +23,18 @@ import (
 	"time"
 )
 
-const jobWorkers = 256
+// jobWorkers is how many images a job keeps in flight; set it with setJobWorkers
+var jobWorkers = 256
 
 // jobReadBufs holds the JPEG bytes of the images job workers are processing
 var jobReadBufs = newFreeList(jobWorkers, func() *bytes.Buffer { return new(bytes.Buffer) })
+
+// setJobWorkers sizes job concurrency and the buffer lists that follow it
+func setJobWorkers(n int) {
+	jobWorkers = max(n, 1)
+	jobReadBufs = newFreeList(jobWorkers, func() *bytes.Buffer { return new(bytes.Buffer) })
+	letterboxBufs = newFreeList(jobWorkers, func() []byte { return make([]byte, 3*letterboxSize*letterboxSize) })
+}
 
 // readFileInto replaces buf's contents with the file at path
 func readFileInto(buf *bytes.Buffer, path string) error {
