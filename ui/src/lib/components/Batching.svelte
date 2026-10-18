@@ -21,14 +21,9 @@
 	});
 
 	const peak = $derived(Math.max(1, ...(b?.sizes ?? [])));
-	const finding = $derived(
-		b && b.batches
-			? `avg ${b.avg_size.toFixed(1)} of ${b.max_batch} · ${b.full_pct.toFixed(0)}% full · fill p50 ${b.fill_p50_ms.toFixed(1)} of ${b.max_wait_ms} ms · lane wait p99 ${b.lane_wait_p99_ms.toFixed(2)} ms`
-			: ''
-	);
 </script>
 
-<Panel title="Batching" sub={live ? 'dynamic batches formed in the last 10 s' : 'dynamic batches formed during the run'} {finding}>
+<Panel title="Batching" sub={live ? 'dynamic batches formed in the last 10 s' : 'dynamic batches formed during the run'}>
 	{#if !b || !b.batches}
 		<p class="text-sm text-[var(--text-muted)]">No batches{live ? ' in the last 10 s' : ''}.</p>
 	{:else}

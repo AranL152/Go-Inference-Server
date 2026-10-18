@@ -39,25 +39,10 @@
 	// stages with almost no goroutine time draw misleading full bars
 	const shown = $derived(stages.filter((s) => s.seconds / (t?.seconds || 1) >= 0.05));
 	const by = (name: string) => stages.find((s) => s.stage === name);
-	const finding = $derived.by(() => {
-		const out: string[] = [];
-		const infer = by('infer');
-		const decode = by('decode');
-		const wait = by('decoder wait');
-		if (infer) {
-			const top = infer.waits?.[0]?.reason;
-			out.push(`infer lanes ${infer.blocked_pct.toFixed(0)}% blocked${top ? ` on ${top}` : ''}, ${infer.syscall_pct.toFixed(0)}% in C`);
-		}
-		if (decode) out.push(`decode ${decode.syscall_pct.toFixed(0)}% in C, ${decode.runnable_pct.toFixed(0)}% waiting for a CPU`);
-		if (decode && wait && wait.seconds / decode.seconds > 0.1) {
-			out.push(`decoder wait ${((100 * wait.seconds) / decode.seconds).toFixed(0)}% of decode time`);
-		}
-		return out.join(' · ');
-	});
 	const avgBusy = (s: StageTime) => s.seconds / (t?.seconds || 1);
 </script>
 
-<Panel title="Goroutine time by stage" sub="Go execution trace: where each stage's goroutines spent their time" {finding}>
+<Panel title="Goroutine time by stage" sub="Go execution trace: where each stage's goroutines spent their time">
 	{#snippet actions()}{#if live}<CaptureButton {busy} seconds={SECONDS} onclick={capture} />{/if}{/snippet}
 	{#if error}<p class="mb-3 text-sm text-[var(--status-critical)]">{error}</p>{/if}
 	{#if !t}

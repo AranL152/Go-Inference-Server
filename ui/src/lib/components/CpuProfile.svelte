@@ -34,14 +34,9 @@
 
 	const stages = $derived(p?.stages ?? []);
 	const top = $derived(p?.top ?? []);
-	const finding = $derived.by(() => {
-		if (!p || !stages.length || !top.length) return '';
-		const s = stages[0];
-		return `${s.stage} ${s.pct.toFixed(0)}% of CPU · ${s.cores.toFixed(1)} of ${p.cores.toFixed(1)} cores · top ${label(top[0].func)} ${top[0].pct.toFixed(0)}%`;
-	});
 </script>
 
-<Panel title="CPU profile" sub="pprof samples split by pipeline stage label" {finding}>
+<Panel title="CPU profile" sub="pprof samples split by pipeline stage label">
 	{#snippet actions()}{#if live}<CaptureButton {busy} seconds={SECONDS} onclick={capture} />{/if}{/snippet}
 	{#if error}<p class="mb-3 text-sm text-[var(--status-critical)]">{error}</p>{/if}
 	{#if !p}
@@ -57,11 +52,6 @@
 					<div class="h-2 overflow-hidden rounded-full bg-[var(--bg)]">
 						<div class="h-full rounded-full bg-[var(--accent)]" style="width: {s.pct}%"></div>
 					</div>
-					{#if s.top?.length}
-						<div class="mt-0.5 truncate font-mono text-[11px] text-[var(--text-muted)]">
-							{s.top.map((f) => `${label(f.func)} ${f.pct.toFixed(1)}%`).join(' · ')}
-						</div>
-					{/if}
 				</div>
 			{/each}
 		</div>

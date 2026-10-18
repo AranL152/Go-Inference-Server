@@ -52,11 +52,6 @@
 	// scale to the two tightest stages so a far larger ceiling does not flatten them
 	const scale = $derived(Math.max(rps, rows[1]?.cap ?? rows[0]?.cap ?? 0) * 1.15 || 1);
 	const n = (v: number) => Math.round(v).toLocaleString();
-	const finding = $derived(
-		rows.length
-			? `Limit: ${rows[0].name} · ceiling ${n(rows[0].cap)} img/s · at ${Math.round((100 * rps) / rows[0].cap)}%${rows[1] ? ` · next ${rows[1].name} ${n(rows[1].cap)}` : ''}`
-			: ''
-	);
 	const sub = $derived(
 		stale
 			? `last busy at ${new Date(lastBusy).toLocaleTimeString()}`
@@ -64,7 +59,7 @@
 	);
 </script>
 
-<Panel title="Bottleneck" {sub} {finding}>
+<Panel title="Bottleneck" {sub}>
 	{#if !rows.length}
 		<p class="text-sm text-[var(--text-muted)]">No traffic yet.</p>
 	{:else}

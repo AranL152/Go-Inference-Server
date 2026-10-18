@@ -15,15 +15,10 @@
 
 	const p = $derived(all.find((x) => x.model === model) ?? all[0]);
 	const base = $derived((p?.model ?? model).replace(/\.onnx$/, ''));
-	const finding = $derived(
-		p
-			? `GPU busy ${p.gpu_busy_pct}% · copies overlapped ${p.copy_hidden_pct}% · host to GPU ${p.h2d.gb_per_s} GB/s, ${p.h2d.pinned_pct}% pinned`
-			: ''
-	);
 	const us = (v: number) => (v >= 1000 ? `${(v / 1000).toFixed(1)} ms` : `${v.toFixed(0)} µs`);
 </script>
 
-<Panel title="GPU timeline" sub="Nsight Systems trace of kernels and copies under steady load, captured with profile_gpu.sh" {finding}>
+<Panel title="GPU timeline" sub="Nsight Systems trace of kernels and copies under steady load, captured with profile_gpu.sh">
 	{#if !p}
 		<p class="text-sm text-[var(--text-muted)]">No Nsight Systems capture yet. Run</p>
 		<pre class="mt-2 overflow-x-auto rounded-lg bg-[var(--bg)] px-3 py-2 font-mono text-xs text-[var(--fg)]">./profile_gpu.sh {model || 'MODEL.onnx'} -device-binding -trt trt_cache</pre>

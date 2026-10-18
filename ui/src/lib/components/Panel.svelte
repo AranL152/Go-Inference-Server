@@ -4,12 +4,11 @@
 	interface Props {
 		title: string;
 		sub?: string;
-		finding?: string;
 		wide?: boolean;
 		actions?: Snippet;
 		children: Snippet;
 	}
-	let { title, sub = '', finding = '', wide = false, actions, children }: Props = $props();
+	let { title, sub = '', wide = false, actions, children }: Props = $props();
 </script>
 
 <section
@@ -24,10 +23,5 @@
 		</div>
 		{#if actions}<div class="flex items-center gap-2">{@render actions()}</div>{/if}
 	</div>
-	{#if finding}
-		<div class="border-b border-[var(--border)] bg-[var(--accent-soft)] px-4 py-2 text-sm text-[var(--fg)]">
-			{finding}
-		</div>
-	{/if}
 	<div class="p-4">{@render children()}</div>
 </section>

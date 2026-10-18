@@ -18,14 +18,9 @@
 		{ label: 'GC pause p99', value: us(mean((x) => x.gc_pause_p99_us)), f: (x: Sample) => x.gc_pause_p99_us },
 		{ label: 'Wait for CPU p99', value: us(mean((x) => x.sched_p99_us)), f: (x: Sample) => x.sched_p99_us }
 	]);
-	const finding = $derived(
-		busy.length
-			? `${kb(mean((x) => x.alloc_bytes_per_req))} and ${mean((x) => x.allocs_per_req).toFixed(0)} objects per request · ${mean((x) => x.gc_per_sec).toFixed(1)} GC/s · GC ${mean((x) => x.gc_cpu_pct).toFixed(1)}% of CPU`
-			: ''
-	);
 </script>
 
-<Panel title="Go runtime" sub="garbage per request, GC cost and scheduler delay from runtime/metrics" {finding}>
+<Panel title="Go runtime" sub="garbage per request, GC cost and scheduler delay from runtime/metrics">
 	{#if !busy.length}
 		<p class="text-sm text-[var(--text-muted)]">No traffic yet.</p>
 	{:else}
