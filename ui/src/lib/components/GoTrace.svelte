@@ -5,8 +5,10 @@
 	import CaptureFooter from './CaptureFooter.svelte';
 	import { latestCapture, startCapture, type StageTime, type TraceSummary } from '$lib/stats';
 
+	let { data = null, live = true }: { data?: TraceSummary | null; live?: boolean } = $props();
 	const SECONDS = 2;
-	let t = $state<TraceSummary | null>(null);
+	let captured = $state<TraceSummary | null>(null);
+	const t = $derived(live ? captured : data);
 	let busy = $state(false);
 	let error = $state('');
 
@@ -21,7 +23,7 @@
 		busy = true;
 		error = '';
 		try {
-			t = await startCapture<TraceSummary>('trace', SECONDS);
+			captured = await startCapture<TraceSummary>('trace', SECONDS);
 		} catch (e) {
 			error = (e as Error).message;
 		} finally {
@@ -30,7 +32,7 @@
 	}
 
 	onMount(async () => {
-		t = await latestCapture<TraceSummary>('trace');
+		if (live) captured = await latestCapture<TraceSummary>('trace');
 	});
 
 	const stages = $derived(t?.stages ?? []);
@@ -43,29 +45,23 @@
 		const decode = by('decode');
 		const wait = by('decoder wait');
 		if (infer) {
-			const top = infer.waits?.[0]?.reason ?? '';
-			if (infer.blocked_pct > 50 && top.includes('chan receive')) {
-				out.push(`Infer lanes spend ${infer.blocked_pct.toFixed(0)}% of their time waiting for a batch, so the GPU is starved by the stages before it.`);
-			} else if (infer.running_pct + infer.syscall_pct > 70) {
-				out.push(`Infer lanes are working ${(infer.running_pct + infer.syscall_pct).toFixed(0)}% of the time, so the GPU side is the limit.`);
-			}
+			const top = infer.waits?.[0]?.reason;
+			out.push(`infer lanes ${infer.blocked_pct.toFixed(0)}% blocked${top ? ` on ${top}` : ''}, ${infer.syscall_pct.toFixed(0)}% in C`);
 		}
-		if (decode && decode.runnable_pct > 10) {
-			out.push(`Decode goroutines wait for a CPU ${decode.runnable_pct.toFixed(0)}% of the time.`);
-		}
+		if (decode) out.push(`decode ${decode.syscall_pct.toFixed(0)}% in C, ${decode.runnable_pct.toFixed(0)}% waiting for a CPU`);
 		if (decode && wait && wait.seconds / decode.seconds > 0.1) {
-			out.push(`Requests spend ${((100 * wait.seconds) / decode.seconds).toFixed(0)}% as long waiting for a free decoder as decoding.`);
+			out.push(`decoder wait ${((100 * wait.seconds) / decode.seconds).toFixed(0)}% of decode time`);
 		}
-		return out.join(' ');
+		return out.join(' · ');
 	});
 	const avgBusy = (s: StageTime) => s.seconds / (t?.seconds || 1);
 </script>
 
 <Panel title="Goroutine time by stage" sub="Go execution trace: where each stage's goroutines spent their time" {finding}>
-	{#snippet actions()}<CaptureButton {busy} seconds={SECONDS} onclick={capture} />{/snippet}
+	{#snippet actions()}{#if live}<CaptureButton {busy} seconds={SECONDS} onclick={capture} />{/if}{/snippet}
 	{#if error}<p class="mb-3 text-sm text-[var(--status-critical)]">{error}</p>{/if}
 	{#if !t}
-		<p class="text-sm text-[var(--text-muted)]">No trace yet. Capture one while the server is under load.</p>
+		<p class="text-sm text-[var(--text-muted)]">{live ? 'No trace yet. Capture one while the server is under load.' : 'The run ended before a trace could be taken.'}</p>
 	{:else}
 		<div class="space-y-3">
 			{#each shown as s}

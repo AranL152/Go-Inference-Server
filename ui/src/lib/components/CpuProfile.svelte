@@ -5,8 +5,11 @@
 	import CaptureFooter from './CaptureFooter.svelte';
 	import { latestCapture, shortFunc, startCapture, type CpuSummary } from '$lib/stats';
 
+	// a recorded run passes its profile in and has no capture button
+	let { data = null, live = true }: { data?: CpuSummary | null; live?: boolean } = $props();
 	const SECONDS = 3;
-	let p = $state<CpuSummary | null>(null);
+	let captured = $state<CpuSummary | null>(null);
+	const p = $derived(live ? captured : data);
 	let busy = $state(false);
 	let error = $state('');
 
@@ -17,7 +20,7 @@
 		busy = true;
 		error = '';
 		try {
-			p = await startCapture<CpuSummary>('cpu', SECONDS);
+			captured = await startCapture<CpuSummary>('cpu', SECONDS);
 		} catch (e) {
 			error = (e as Error).message;
 		} finally {
@@ -26,7 +29,7 @@
 	}
 
 	onMount(async () => {
-		p = await latestCapture<CpuSummary>('cpu');
+		if (live) captured = await latestCapture<CpuSummary>('cpu');
 	});
 
 	const stages = $derived(p?.stages ?? []);
@@ -34,15 +37,15 @@
 	const finding = $derived.by(() => {
 		if (!p || !stages.length || !top.length) return '';
 		const s = stages[0];
-		return `${s.stage} takes ${s.pct.toFixed(0)}% of server CPU (${s.cores.toFixed(1)} of ${p.cores.toFixed(1)} busy cores). Hottest function: ${label(top[0].func)} at ${top[0].pct.toFixed(0)}%.`;
+		return `${s.stage} ${s.pct.toFixed(0)}% of CPU · ${s.cores.toFixed(1)} of ${p.cores.toFixed(1)} cores · top ${label(top[0].func)} ${top[0].pct.toFixed(0)}%`;
 	});
 </script>
 
 <Panel title="CPU profile" sub="pprof samples split by pipeline stage label" {finding}>
-	{#snippet actions()}<CaptureButton {busy} seconds={SECONDS} onclick={capture} />{/snippet}
+	{#snippet actions()}{#if live}<CaptureButton {busy} seconds={SECONDS} onclick={capture} />{/if}{/snippet}
 	{#if error}<p class="mb-3 text-sm text-[var(--status-critical)]">{error}</p>{/if}
 	{#if !p}
-		<p class="text-sm text-[var(--text-muted)]">No profile yet. Capture one while the server is under load.</p>
+		<p class="text-sm text-[var(--text-muted)]">{live ? 'No profile yet. Capture one while the server is under load.' : 'The run ended before a profile could be taken.'}</p>
 	{:else}
 		<div class="space-y-2">
 			{#each stages as s}

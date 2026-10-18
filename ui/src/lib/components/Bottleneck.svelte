@@ -2,12 +2,14 @@
 	import Panel from './Panel.svelte';
 	import type { Sample, ServerConfig } from '$lib/stats';
 
-	let { samples, cfg }: { samples: Sample[]; cfg: ServerConfig | null } = $props();
+	// span is how many busy seconds to average: a few for live, the whole run for a job
+	let { samples, cfg, span = 5 }: { samples: Sample[]; cfg: ServerConfig | null; span?: number } = $props();
 
-	// average the last few busy seconds so the estimate does not flicker
-	const recent = $derived(samples.slice(-5).filter((x) => x.req_per_sec > 0));
+	const recent = $derived(samples.filter((x) => x.req_per_sec > 0).slice(-span));
 	const mean = (f: (x: Sample) => number) =>
 		recent.length ? recent.reduce((a, x) => a + f(x), 0) / recent.length : 0;
+	const lastBusy = $derived(recent.at(-1)?.t ?? 0);
+	const stale = $derived(span <= 10 && lastBusy > 0 && (samples.at(-1)?.t ?? 0) - lastBusy > 5000);
 
 	const rows = $derived.by(() => {
 		if (!cfg || !recent.length) return [];
@@ -24,11 +26,7 @@
 		}
 		const busy = mean((x) => x.gpu?.util ?? 0);
 		if (busy > 3) {
-			out.push({
-				name: 'GPU',
-				how: `${Math.round(rps)} img/s at ${busy.toFixed(0)}% busy`,
-				cap: rps / (busy / 100)
-			});
+			out.push({ name: 'GPU', how: `${Math.round(rps)} img/s at ${busy.toFixed(0)}% busy`, cap: rps / (busy / 100) });
 		}
 		const postMs = mean((x) => x.post_ms);
 		const batch = mean((x) => x.avg_batch);
@@ -44,18 +42,20 @@
 	const rps = $derived(mean((x) => x.req_per_sec));
 	// scale to the two tightest stages so a far larger ceiling does not flatten them
 	const scale = $derived(Math.max(rps, rows[1]?.cap ?? rows[0]?.cap ?? 0) * 1.15 || 1);
-	const finding = $derived.by(() => {
-		if (!rows.length) return '';
-		const lim = rows[0];
-		const next = rows[1];
-		return `${lim.name} caps throughput near ${Math.round(lim.cap).toLocaleString()} img/s. Serving ${Math.round(rps).toLocaleString()} img/s, ${Math.round((100 * rps) / lim.cap)}% of that ceiling${next ? `; ${next.name} could take ${Math.round(next.cap).toLocaleString()}` : ''}.`;
-	});
 	const n = (v: number) => Math.round(v).toLocaleString();
+	const finding = $derived(
+		rows.length
+			? `Limit: ${rows[0].name} · ceiling ${n(rows[0].cap)} img/s · at ${Math.round((100 * rps) / rows[0].cap)}%${rows[1] ? ` · next ${rows[1].name} ${n(rows[1].cap)}` : ''}`
+			: ''
+	);
+	const sub = $derived(
+		stale ? `last busy at ${new Date(lastBusy).toLocaleTimeString()}` : `ceiling of each stage from its cost per item, ${span <= 10 ? `last ${recent.length} busy s` : 'whole run'}`
+	);
 </script>
 
-<Panel title="Bottleneck" sub="ceiling of each stage from its live cost per item" {finding}>
+<Panel title="Bottleneck" {sub} {finding}>
 	{#if !rows.length}
-		<p class="text-sm text-[var(--text-muted)]">No traffic in the last few seconds. Send load to estimate each stage's ceiling.</p>
+		<p class="text-sm text-[var(--text-muted)]">No traffic yet.</p>
 	{:else}
 		<div class="space-y-3">
 			{#each rows as r, i}
@@ -69,16 +69,12 @@
 							class="h-full rounded-full {i === 0 ? 'bg-[var(--accent)]' : 'bg-[var(--border)]'}"
 							style="width: {Math.min(100, (100 * r.cap) / scale)}%"
 						></div>
-						<div
-							class="absolute -top-1 h-5 w-0.5 bg-[var(--fg)]"
-							style="left: {(100 * rps) / scale}%"
-							title="current throughput"
-						></div>
+						<div class="absolute -top-1 h-5 w-0.5 bg-[var(--fg)]" style="left: {(100 * rps) / scale}%" title="throughput"></div>
 					</div>
 				</div>
 			{/each}
 			<p class="text-xs text-[var(--text-muted)] tabular-nums">
-				<span class="mr-1 inline-block h-3 w-0.5 translate-y-0.5 bg-[var(--fg)]"></span>current throughput {n(rps)} img/s
+				<span class="mr-1 inline-block h-3 w-0.5 translate-y-0.5 bg-[var(--fg)]"></span>throughput {n(rps)} img/s
 			</p>
 		</div>
 	{/if}

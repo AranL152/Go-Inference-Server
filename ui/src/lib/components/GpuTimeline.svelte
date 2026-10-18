@@ -17,13 +17,13 @@
 	const base = $derived((p?.model ?? model).replace(/\.onnx$/, ''));
 	const finding = $derived(
 		p
-			? `GPU busy ${p.gpu_busy_pct}% of the capture (${p.compute_pct}% kernels, ${p.copy_pct}% copies); ${p.copy_hidden_pct}% of copy time overlaps compute. Inputs reach the GPU at ${p.h2d.gb_per_s} GB/s, ${p.h2d.pinned_pct}% from pinned memory.`
+			? `GPU busy ${p.gpu_busy_pct}% · copies overlapped ${p.copy_hidden_pct}% · host to GPU ${p.h2d.gb_per_s} GB/s, ${p.h2d.pinned_pct}% pinned`
 			: ''
 	);
 	const us = (v: number) => (v >= 1000 ? `${(v / 1000).toFixed(1)} ms` : `${v.toFixed(0)} µs`);
 </script>
 
-<Panel title="GPU timeline" sub="Nsight Systems trace of kernels and copies under steady load" {finding}>
+<Panel title="GPU timeline" sub="Nsight Systems trace of kernels and copies under steady load, captured with profile_gpu.sh" {finding}>
 	{#if !p}
 		<p class="text-sm text-[var(--text-muted)]">No Nsight Systems capture yet. Run</p>
 		<pre class="mt-2 overflow-x-auto rounded-lg bg-[var(--bg)] px-3 py-2 font-mono text-xs text-[var(--fg)]">./profile_gpu.sh {model || 'MODEL.onnx'} -device-binding -trt trt_cache</pre>
@@ -36,26 +36,6 @@
 				</div>
 			{/each}
 		</dl>
-		<table class="mt-4 w-full text-xs tabular-nums">
-			<thead>
-				<tr class="border-b border-[var(--border)] text-left text-[var(--text-muted)]">
-					<th class="py-1 font-normal">Kernel</th>
-					<th class="py-1 text-right font-normal">Calls</th>
-					<th class="py-1 text-right font-normal">Avg</th>
-					<th class="py-1 text-right font-normal">Share</th>
-				</tr>
-			</thead>
-			<tbody>
-				{#each p.top_kernels as k}
-					<tr class="border-b border-[var(--border)] text-[var(--fg)]">
-						<td class="max-w-0 truncate py-1 pr-2 font-mono" title={k.name}>{k.name}</td>
-						<td class="py-1 text-right">{k.calls.toLocaleString()}</td>
-						<td class="py-1 text-right">{us(k.avg_us)}</td>
-						<td class="py-1 text-right">{k.share_pct}%</td>
-					</tr>
-				{/each}
-			</tbody>
-		</table>
 		<div class="mt-4 border-t border-[var(--border)] pt-3 text-xs text-[var(--text-muted)]">
 			{p.seconds} s capture of {p.model} · open in Nsight Systems:
 			<span class="ml-1 rounded-md bg-[var(--bg)] px-2 py-1 font-mono text-[var(--fg)] ring-1 ring-[var(--border)]">nsys-ui profiles/{base}.nsys-rep</span>

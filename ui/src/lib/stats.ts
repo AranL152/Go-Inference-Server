@@ -158,3 +158,13 @@ export async function latestCapture<T>(kind: 'cpu' | 'trace'): Promise<T | null>
 		.then((r) => r.json())
 		.catch(() => null);
 }
+
+export interface RunPerf {
+	job_id: string;
+	start: string;
+	end: string;
+	samples: Sample[];
+	batching: BatchingStats;
+	cpu: CpuSummary | null;
+	trace: TraceSummary | null;
+}
