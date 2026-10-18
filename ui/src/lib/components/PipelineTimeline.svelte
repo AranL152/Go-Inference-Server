@@ -26,13 +26,21 @@
 		{ label: '250 ms', ms: 250 },
 		{ label: '1 s', ms: 1000 }
 	];
+	const speeds = [
+		{ label: 'Live', v: 1 },
+		{ label: '1/5×', v: 0.2 },
+		{ label: '1/20×', v: 0.05 }
+	];
 	const LAG_MS = 300; // spans are recorded once unpacked, so draw a little behind now
+	const MAX_BEHIND_MS = 8000; // slow playback jumps back to the present past this
 	const LABEL_W = 64;
 	const ROW_GAP = 6;
 	const AXIS_H = 18;
 
 	let windowMs = $state(250);
 	let paused = $state(false);
+	let speed = $state(0.05);
+	let behindS = $state(0);
 	let lanes = $state(1);
 	let maxBatch = $state(0);
 	let error = $state(false);
@@ -49,7 +57,9 @@
 	// server clock in ns lined up with performance.now() in ms
 	let anchorServer = 0;
 	let anchorClient = 0;
-	let frozenEnd = 0;
+	// playhead in server ns; slow speeds advance it slower than real time
+	let cursor = 0;
+	let lastFrame = 0;
 
 	const rows = $derived(['Batcher', ...Array.from({ length: lanes }, (_, i) => `Lane ${i + 1}`), 'Unpack']);
 	const height = $derived(rows.length * (ROW_H + ROW_GAP) + AXIS_H);
@@ -58,8 +68,22 @@
 		return anchorServer + (performance.now() - anchorClient) * 1e6;
 	}
 
+	function advance(frameMs: number) {
+		const dt = lastFrame ? frameMs - lastFrame : 0;
+		lastFrame = frameMs;
+		if (paused || !anchorServer) return;
+		const live = serverNow() - LAG_MS * 1e6;
+		if (speed >= 1 || !cursor) cursor = live;
+		else {
+			cursor += dt * 1e6 * speed;
+			if (cursor > live || cursor < live - MAX_BEHIND_MS * 1e6) cursor = live;
+		}
+		const behind = Math.round((live - cursor) / 1e8) / 10;
+		if (behind !== behindS) behindS = behind;
+	}
+
 	function viewEnd() {
-		return paused ? frozenEnd : serverNow() - LAG_MS * 1e6;
+		return cursor;
 	}
 
 	async function poll() {
@@ -78,7 +102,7 @@
 				spans.push(...r.spans);
 				lastSeq = r.spans[r.spans.length - 1].seq;
 			}
-			const keepFrom = serverNow() - (LAG_MS + 2000) * 1e6;
+			const keepFrom = serverNow() - (LAG_MS + MAX_BEHIND_MS + 2000) * 1e6;
 			let i = 0;
 			while (i < spans.length && spans[i].post_end < keepFrom) i++;
 			if (i) spans = spans.slice(i);
@@ -171,7 +195,7 @@
 			ctx.globalAlpha = 1;
 			if (ms % (step * 2) === 0) {
 				ctx.fillStyle = colors.text;
-				ctx.fillText(ms === 0 ? 'now' : `−${ms} ms`, Math.min(Math.max(gx, LABEL_W + 18), width - 18), plotBottom + AXIS_H / 2 + 2);
+				ctx.fillText(ms === 0 ? (speed >= 1 ? 'now' : '0 ms') : `−${ms} ms`, Math.min(Math.max(gx, LABEL_W + 18), width - 18), plotBottom + AXIS_H / 2 + 2);
 			}
 		}
 		ctx.textAlign = 'left';
@@ -240,7 +264,6 @@
 	const ms = (a: number, b: number) => (Math.max(b - a, 0) / 1e6).toFixed(2);
 
 	function togglePause() {
-		frozenEnd = viewEnd();
 		paused = !paused;
 		if (!paused) hover = null;
 	}
@@ -252,7 +275,8 @@
 		poll();
 		const t = setInterval(poll, 100);
 		let raf = 0;
-		const loop = () => {
+		const loop = (frameMs: number) => {
+			advance(frameMs);
 			draw();
 			raf = requestAnimationFrame(loop);
 		};
@@ -274,7 +298,20 @@
 			<span><span class="text-[var(--fg)]">{Math.round(stats.rate).toLocaleString()}</span> img/s</span>
 			{#if error}<span class="text-[var(--status-critical)]">disconnected</span>{/if}
 		</div>
-		<div class="flex items-center gap-2 text-xs">
+		<div class="flex flex-wrap items-center gap-2 text-xs">
+			{#if speed < 1 && !paused}
+				<span class="text-[var(--text-muted)] tabular-nums">replay · {behindS.toFixed(1)} s behind</span>
+			{/if}
+			<div class="flex rounded-full bg-[var(--bg)] p-0.5 ring-1 ring-[var(--border)]">
+				{#each speeds as sp}
+					<button
+						onclick={() => (speed = sp.v)}
+						class="rounded-full px-2.5 py-0.5 {speed === sp.v
+							? 'bg-[var(--accent)] text-white'
+							: 'text-[var(--text-muted)] hover:text-[var(--fg)]'}">{sp.label}</button
+					>
+				{/each}
+			</div>
 			<div class="flex rounded-full bg-[var(--bg)] p-0.5 ring-1 ring-[var(--border)]">
 				{#each windows as w}
 					<button
