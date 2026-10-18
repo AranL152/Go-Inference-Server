@@ -1,88 +1,88 @@
 {
  "model": "yolox_s_u8.onnx",
- "seconds": 3.12,
- "gpu_busy_pct": 32.5,
- "compute_pct": 23.4,
- "copy_pct": 9.1,
- "copy_hidden_pct": 0.0,
- "idle_gaps": 59355,
- "idle_gap_p50_us": 1.4,
- "idle_gap_p99_us": 61.4,
- "kernels_per_s": 18738.0,
- "kernel_avg_us": 12.5,
- "short_kernel_pct": 55.7,
- "launch_avg_us": 6.6,
- "threads_blocked_on_gpu": 0.11,
+ "seconds": 3.21,
+ "gpu_busy_pct": 84.3,
+ "compute_pct": 46.4,
+ "copy_pct": 44.7,
+ "copy_hidden_pct": 15.1,
+ "idle_gaps": 36395,
+ "idle_gap_p50_us": 1.2,
+ "idle_gap_p99_us": 151.6,
+ "kernels_per_s": 12239.0,
+ "kernel_avg_us": 37.9,
+ "short_kernel_pct": 33.1,
+ "launch_avg_us": 16.2,
+ "threads_blocked_on_gpu": 0.3,
  "h2d": {
-  "count": 418,
-  "mb": 1537.2,
-  "avg_kb": 3677.6,
-  "gb_per_s": 18.6,
-  "pinned_pct": 0.0
+  "count": 282,
+  "mb": 5422.7,
+  "avg_kb": 19229.4,
+  "gb_per_s": 20.7,
+  "pinned_pct": 89.9
  },
  "d2h": {
-  "count": 418,
-  "mb": 3572.9,
-  "avg_kb": 8547.5,
-  "gb_per_s": 17.66,
+  "count": 281,
+  "mb": 12546.4,
+  "avg_kb": 44649.1,
+  "gb_per_s": 10.47,
   "pinned_pct": 0.0
  },
  "top_kernels": [
   {
    "name": "sm80_xmma_fprop_implicit_gemm_f16f16_f16f16_f16_nhwckrsc_nhwc_tilesize12",
-   "calls": 16720,
-   "total_ms": 286.05,
-   "avg_us": 17.1,
-   "share_pct": 39.1
+   "calls": 11240,
+   "total_ms": 510.45,
+   "avg_us": 45.4,
+   "share_pct": 34.3
   },
   {
    "name": "sm80_xmma_fprop_implicit_gemm_f16f16_f16f16_f16_nhwckrsc_nhwc_tilesize25",
-   "calls": 5434,
-   "total_ms": 137.62,
-   "avg_us": 25.3,
-   "share_pct": 18.8
+   "calls": 3653,
+   "total_ms": 332.04,
+   "avg_us": 90.9,
+   "share_pct": 22.3
   },
   {
    "name": "sm75_xmma_fprop_implicit_gemm_f16f16_f16f16_f16_nhwckrsc_nhwc_tilesize12",
-   "calls": 4180,
-   "total_ms": 88.49,
-   "avg_us": 21.2,
-   "share_pct": 12.1
-  },
-  {
-   "name": "copyPackedKernel",
-   "calls": 7942,
-   "total_ms": 55.81,
-   "avg_us": 7.0,
-   "share_pct": 7.6
-  },
-  {
-   "name": "permutationKernelPLC3",
-   "calls": 5016,
-   "total_ms": 55.31,
-   "avg_us": 11.0,
-   "share_pct": 7.6
+   "calls": 2810,
+   "total_ms": 198.19,
+   "avg_us": 70.5,
+   "share_pct": 13.3
   },
   {
    "name": "generatedNativePointwise",
-   "calls": 12540,
-   "total_ms": 49.84,
-   "avg_us": 4.0,
-   "share_pct": 6.8
+   "calls": 8430,
+   "total_ms": 133.59,
+   "avg_us": 15.8,
+   "share_pct": 9.0
+  },
+  {
+   "name": "permutationKernelPLC3",
+   "calls": 3372,
+   "total_ms": 123.12,
+   "avg_us": 36.5,
+   "share_pct": 8.3
   },
   {
    "name": "sm80_xmma_fprop_implicit_gemm_f16f16_f16f16_f16_nhwckrsc_nhwc_tilesize64",
-   "calls": 1672,
-   "total_ms": 24.76,
-   "avg_us": 14.8,
-   "share_pct": 3.4
+   "calls": 1124,
+   "total_ms": 70.06,
+   "avg_us": 62.3,
+   "share_pct": 4.7
   },
   {
-   "name": "sm50_xmma_pooling_coalescedC_NHWC_kMAX_3_False_execute_kernel_trt",
-   "calls": 1254,
-   "total_ms": 15.66,
-   "avg_us": 12.5,
-   "share_pct": 2.1
+   "name": "copyPackedKernel",
+   "calls": 5339,
+   "total_ms": 41.11,
+   "avg_us": 7.7,
+   "share_pct": 2.8
+  },
+  {
+   "name": "__myl_CastTranSlicSlicSlicSlicSlicSlicConc_0x5ab2fb4fd38ec4093022568adbf",
+   "calls": 281,
+   "total_ms": 34.46,
+   "avg_us": 122.6,
+   "share_pct": 2.3
   }
  ]
 }
