@@ -3,51 +3,14 @@
 	import Chart, { type Series } from './Chart.svelte';
 	import KernelProfile from './KernelProfile.svelte';
 	import LogWidget from './LogWidget.svelte';
-
-	interface Gpu {
-		name: string;
-		util: number;
-		mem_util: number;
-		mem_used_mb: number;
-		mem_total_mb: number;
-		temp_c: number;
-		power_w: number;
-		power_limit_w: number;
-		sm_clock_mhz: number;
-		sm_clock_max_mhz: number;
-		mem_clock_mhz: number;
-		pcie_gen: number;
-		pcie_width: number;
-		pcie_rx_mbs: number;
-		pcie_tx_mbs: number;
-		throttle: string[];
-		power_violation_pct: number;
-		thermal_violation_pct: number;
-	}
-	interface Sample {
-		t: number;
-		gpu: Gpu | null;
-		cpu: number;
-		cores: number[];
-		mem_used_mb: number;
-		mem_total_mb: number;
-		proc_cpu: number;
-		proc_rss_mb: number;
-		goroutines: number;
-		req_per_sec: number;
-		avg_batch: number;
-		queue_ms: number;
-		run_ms: number;
-		lane_busy: number;
-		p50_ms: number;
-		p99_ms: number;
-		decode_ms: number;
-		letterbox_ms: number;
-		h2d_ms: number;
-		compute_ms: number;
-		d2h_ms: number;
-		post_ms: number;
-	}
+	import Panel from './Panel.svelte';
+	import Bottleneck from './Bottleneck.svelte';
+	import CpuProfile from './CpuProfile.svelte';
+	import GoTrace from './GoTrace.svelte';
+	import Batching from './Batching.svelte';
+	import GoRuntime from './GoRuntime.svelte';
+	import GpuTimeline from './GpuTimeline.svelte';
+	import type { Gpu, Sample, ServerConfig } from '$lib/stats';
 
 	const ranges = [
 		{ label: '1m', n: 60 },
@@ -56,7 +19,7 @@
 	];
 	let range = $state(300);
 	let samples = $state<Sample[]>([]);
-	let model = $state('');
+	let cfg = $state<ServerConfig | null>(null);
 	let error = $state('');
 
 	async function poll() {
@@ -73,13 +36,14 @@
 	onMount(() => {
 		fetch('/api/config')
 			.then((r) => r.json())
-			.then((c) => (model = c.model))
+			.then((c) => (cfg = c))
 			.catch(() => {});
 		poll();
 		const t = setInterval(poll, 1000);
 		return () => clearInterval(t);
 	});
 
+	const model = $derived(cfg?.model ?? '');
 	const s = $derived(samples.at(-1));
 	const times = $derived(samples.map((x) => x.t));
 	const col = (f: (x: Sample) => number) => samples.map(f);
@@ -165,28 +129,15 @@
 	);
 
 	const views = [
-		{ id: 'overview', label: 'Overview' },
-		{ id: 'inference', label: 'Inference' },
-		{ id: 'gpu', label: 'GPU' },
-		{ id: 'host', label: 'CPU and memory' },
-		{ id: 'kernels', label: 'GPU kernels' },
+		{ id: 'analysis', label: 'Analysis' },
+		{ id: 'series', label: 'Time series' },
 		{ id: 'logs', label: 'Logs' }
 	] as const;
-	let view = $state<(typeof views)[number]['id']>('overview');
+	let view = $state<(typeof views)[number]['id']>('analysis');
 </script>
 
 {#snippet card(title: string, sub: string, body: () => any, wide = false)}
-	<div
-		class="overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface)] shadow-sm {wide
-			? 'lg:col-span-2'
-			: ''}"
-	>
-		<div class="flex items-baseline justify-between gap-2 border-b border-[var(--border)] px-4 py-2.5">
-			<h3 class="text-sm font-semibold text-[var(--fg)]">{title}</h3>
-			<span class="truncate text-xs text-[var(--text-muted)]">{sub}</span>
-		</div>
-		<div class="p-4">{@render body()}</div>
-	</div>
+	<Panel {title} {sub} {wide}>{@render body()}</Panel>
 {/snippet}
 
 <div class="space-y-5">
@@ -203,7 +154,7 @@
 		</div>
 		<div class="flex items-center gap-3">
 			<span class="hidden text-xs text-[var(--text-muted)] lg:inline">
-				{s?.gpu?.name ?? 'GPU'} · {model || 'model'} · refreshes every second
+				{s?.gpu?.name ?? 'GPU'} · {model || 'model'}
 			</span>
 			<div class="flex rounded-full bg-[var(--surface)] p-0.5 text-xs ring-1 ring-[var(--border)]">
 				{#each ranges as r}
@@ -224,61 +175,76 @@
 		</div>
 	{/if}
 
-	{#if view === 'overview'}
-		<div class="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-6">
-			{#each numbers as n}
-				<div class="overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface)] shadow-sm">
-					<div class="px-4 pt-3">
-						<div class="text-xs text-[var(--text-muted)]">{n.label}</div>
-						<div class="mt-0.5 text-2xl font-semibold text-[var(--fg)] tabular-nums">
-							{n.value}<span class="ml-1 text-sm font-normal text-[var(--text-muted)]">{n.unit}</span>
-						</div>
-					</div>
-					<div class="mt-1 px-1 pb-1">
-						<Chart series={one(n.label, n.spark)} window={range} height={36} compact frame={false} />
-					</div>
-				</div>
-			{/each}
+	{#if view === 'analysis'}
+		<Bottleneck {samples} {cfg} />
+
+		<div class="grid items-start gap-4 lg:grid-cols-2">
+			<CpuProfile />
+			<GoTrace />
 		</div>
 
-		<div class="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
-			{#each alarms as a}
-				<div
-					class="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2.5"
-					style="border-left: 4px solid {levelStyle[a.level].color}"
-				>
+		<div class="grid items-start gap-4 lg:grid-cols-2">
+			<Batching />
+			<GoRuntime {samples} {range} />
+		</div>
+
+		{#snippet breakdown()}
+			<Chart series={stageSeries} {times} window={range} stacked unit=" ms" height={180} />
+			<div class="mt-4 grid grid-cols-2 gap-x-6 gap-y-1.5 text-xs tabular-nums sm:grid-cols-4">
+				{#each stages as st, i}
 					<div class="flex items-center justify-between gap-2">
-						<span class="truncate text-sm text-[var(--fg)]">{a.name}</span>
-						<span class="text-xs font-bold" style="color: {levelStyle[a.level].color}">{levelStyle[a.level].icon}</span>
+						<span class="flex min-w-0 items-center gap-1.5 text-[var(--text-muted)]">
+							<span class="inline-block h-2 w-2 shrink-0 rounded-full" style="background: var(--cat-{i + 1})"></span>
+							<span class="truncate">{st.name}</span>
+						</span>
+						<span class="text-[var(--fg)]">{stageNow[i].toFixed(1)}</span>
 					</div>
-					<div class="truncate text-xs text-[var(--text-muted)]">
-						{levelStyle[a.level].label}{a.detail ? ` · ${a.detail}` : ''}
-					</div>
+				{/each}
+				<div class="flex justify-between gap-2 font-semibold text-[var(--fg)]">
+					<span>Total</span><span>{stageTotal.toFixed(1)} ms</span>
 				</div>
-			{/each}
-		</div>
+			</div>
+		{/snippet}
+		{@render card('Latency budget', 'decode and letterbox per image, GPU stages per batch', breakdown)}
 
-		<div class="grid gap-4 lg:grid-cols-2">
-			{#snippet breakdown()}
-				<Chart series={stageSeries} {times} window={range} stacked unit=" ms" height={200} />
-				<div class="mt-4 grid grid-cols-2 gap-x-6 gap-y-1.5 text-xs tabular-nums sm:grid-cols-4">
-					{#each stages as st, i}
-						<div class="flex items-center justify-between gap-2">
-							<span class="flex min-w-0 items-center gap-1.5 text-[var(--text-muted)]">
-								<span class="inline-block h-2 w-2 shrink-0 rounded-full" style="background: var(--cat-{i + 1})"></span>
-								<span class="truncate">{st.name}</span>
-							</span>
-							<span class="text-[var(--fg)]">{stageNow[i].toFixed(1)}</span>
+		<GpuTimeline {model} />
+		{#snippet kp()}<KernelProfile {model} />{/snippet}
+		{@render card('GPU kernels', 'Nsight Compute hardware counters for one batch', kp)}
+
+		<div>
+			<h2 class="mb-3 text-sm font-semibold text-[var(--text-muted)]">Hardware health</h2>
+			<div class="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
+				{#each numbers as n}
+					<div class="overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface)]">
+						<div class="px-3 pt-2">
+							<div class="text-xs text-[var(--text-muted)]">{n.label}</div>
+							<div class="text-lg font-semibold text-[var(--fg)] tabular-nums">
+								{n.value}<span class="ml-1 text-xs font-normal text-[var(--text-muted)]">{n.unit}</span>
+							</div>
 						</div>
-					{/each}
-					<div class="flex justify-between gap-2 font-semibold text-[var(--fg)]">
-						<span>Total</span><span>{stageTotal.toFixed(1)} ms</span>
+						<div class="px-1 pb-1">
+							<Chart series={one(n.label, n.spark)} window={range} height={28} compact frame={false} />
+						</div>
 					</div>
-				</div>
-			{/snippet}
-			{@render card('Where the time goes', 'decode and letterbox per image, GPU stages per batch', breakdown, true)}
+				{/each}
+			</div>
+			<div class="mt-3 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
+				{#each alarms as a}
+					<div
+						class="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2"
+						style="border-left: 4px solid {levelStyle[a.level].color}"
+					>
+						<div class="flex items-center justify-between gap-2">
+							<span class="truncate text-xs text-[var(--fg)]">{a.name}</span>
+							<span class="text-xs font-bold" style="color: {levelStyle[a.level].color}">{levelStyle[a.level].icon}</span>
+						</div>
+						<div class="truncate text-[11px] text-[var(--text-muted)]">{a.detail}</div>
+					</div>
+				{/each}
+			</div>
 		</div>
-	{:else if view === 'inference'}
+	{:else if view === 'series'}
+		<h2 class="text-sm font-semibold text-[var(--text-muted)]">Pipeline</h2>
 		<div class="grid gap-4 lg:grid-cols-2">
 			{#snippet thr()}<Chart series={one('Images per second', col((x) => x.req_per_sec))} {times} window={range} unit="/s" />{/snippet}
 			{@render card('Throughput', 'images per second', thr)}
@@ -303,7 +269,20 @@
 			{#snippet lanes()}<Chart series={one('Lanes busy', col((x) => x.lane_busy))} {times} window={range} max={100} unit="%" />{/snippet}
 			{@render card('Inference lanes busy', 'percent of time', lanes)}
 		</div>
-	{:else if view === 'gpu'}
+
+		<h2 class="text-sm font-semibold text-[var(--text-muted)]">Go runtime</h2>
+		<div class="grid gap-4 lg:grid-cols-2">
+			{#snippet alloc()}<Chart series={one('Allocated per request', col((x) => x.alloc_bytes_per_req / 1024))} {times} window={range} unit=" KB" />{/snippet}
+			{@render card('Allocated per request', 'kilobytes', alloc)}
+			{#snippet gccpu()}<Chart series={one('GC share of CPU', col((x) => x.gc_cpu_pct))} {times} window={range} unit="%" />{/snippet}
+			{@render card('GC share of CPU', 'percent of the CPU the server used', gccpu)}
+			{#snippet pause()}<Chart series={one('GC pause p99', col((x) => x.gc_pause_p99_us))} {times} window={range} unit=" µs" />{/snippet}
+			{@render card('GC pause p99', 'microseconds', pause)}
+			{#snippet sched()}<Chart series={one('Wait for CPU p99', col((x) => x.sched_p99_us))} {times} window={range} unit=" µs" />{/snippet}
+			{@render card('Goroutine wait for CPU p99', 'microseconds from runnable to running', sched)}
+		</div>
+
+		<h2 class="text-sm font-semibold text-[var(--text-muted)]">GPU</h2>
 		<div class="grid gap-4 lg:grid-cols-2">
 			{#snippet gu()}<Chart series={one('GPU busy', gcol((g) => g.util))} {times} window={range} max={100} unit="%" />{/snippet}
 			{@render card('GPU busy', 'time any kernel ran', gu)}
@@ -330,7 +309,8 @@
 			{#snippet clk()}<Chart series={one('SM clock', gcol((g) => g.sm_clock_mhz))} {times} window={range} max={s?.gpu?.sm_clock_max_mhz || undefined} unit=" MHz" />{/snippet}
 			{@render card('SM clock', `max ${s?.gpu?.sm_clock_max_mhz ?? 0} MHz`, clk)}
 		</div>
-	{:else if view === 'host'}
+
+		<h2 class="text-sm font-semibold text-[var(--text-muted)]">Host</h2>
 		<div class="grid gap-4 lg:grid-cols-2">
 			{#snippet cpu()}
 				<Chart
@@ -374,9 +354,6 @@
 			{#snippet gor()}<Chart series={one('Goroutines', col((x) => x.goroutines))} {times} window={range} />{/snippet}
 			{@render card('Goroutines', 'server concurrency', gor, true)}
 		</div>
-	{:else if view === 'kernels'}
-		{#snippet kp()}<KernelProfile {model} />{/snippet}
-		{@render card('Kernel profile', 'hardware counters from one profiled batch', kp)}
 	{:else}
 		{#snippet logs()}<LogWidget />{/snippet}
 		{@render card('Server log', 'latest 500 lines', logs)}
