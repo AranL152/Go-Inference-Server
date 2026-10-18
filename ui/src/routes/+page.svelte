@@ -7,6 +7,7 @@
 	import JobList from '$lib/components/JobList.svelte';
 	import ResultsView from '$lib/components/ResultsView.svelte';
 	import PerformanceView from '$lib/components/PerformanceView.svelte';
+	import PipelineTimeline from '$lib/components/PipelineTimeline.svelte';
 
 	type Tab = 'detect' | 'results' | 'performance';
 	const heading: Record<Tab, { crumb: string; title: string }> = {
@@ -94,7 +95,15 @@
 					{/if}
 				{/if}
 			</div>
-			<JobList {jobs} onCancel={cancel} onViewResults={(id) => setTab('results', id)} />
+			<div class="min-w-0 space-y-6">
+				<section class="overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface)] shadow-sm">
+					<div class="border-b border-[var(--border)] px-5 py-3">
+						<h2 class="text-sm font-semibold text-[var(--fg)]">Live pipeline</h2>
+					</div>
+					<div class="px-5 py-4"><PipelineTimeline compact /></div>
+				</section>
+				<JobList {jobs} onCancel={cancel} onViewResults={(id) => setTab('results', id)} />
+			</div>
 		</div>
 	{:else if activeTab === 'results'}
 		<ResultsView {jobs} jobId={selectedJob} onSelectJob={(id) => setTab('results', id)} />

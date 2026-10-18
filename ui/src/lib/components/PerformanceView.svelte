@@ -3,6 +3,7 @@
 	import Chart, { type Series } from './Chart.svelte';
 	import KernelProfile from './KernelProfile.svelte';
 	import LogWidget from './LogWidget.svelte';
+	import PipelineTimeline from './PipelineTimeline.svelte';
 
 	interface Gpu {
 		name: string;
@@ -257,6 +258,9 @@
 				</div>
 			{/each}
 		</div>
+
+		{#snippet timeline()}<PipelineTimeline />{/snippet}
+		{@render card('Live pipeline', 'every batch from gather to unpack, hover for timings', timeline)}
 
 		<div class="grid gap-4 lg:grid-cols-2">
 			{#snippet breakdown()}

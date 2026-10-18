@@ -161,6 +161,7 @@ type packedBatch struct {
 	inT   ort.Value
 	raw   []byte          // full-capacity staging buffer backing inT; returned to batchBufPool
 	batch []*batchRequest // ordered; row i of the output belongs to batch[i]
+	span  *batchSpan      // stage timings, filled in as the batch moves along
 }
 
 // inferredBatch is a completed inference handed to an unpack worker for logit
@@ -172,6 +173,7 @@ type inferredBatch struct {
 	// already copied the [n*numClass] logits to this pooled host slice (and
 	// recycled its device slot); unpack returns it to logitsPool.
 	logits []float32
+	span   *batchSpan
 }
 
 // Engine owns the persistent ORT session and the inference pipeline.
@@ -259,11 +261,21 @@ type Engine struct {
 
 	// per batch stage split for the dashboard
 	statH2DNs, statComputeNs, statD2HNs, statPostNs int64
-	statBusyNs     int64
-	statIdleNs     int64
+	statBusyNs                                      int64
+	statIdleNs                                      int64
 
 	gpuDelta int // MiB of GPU memory the session allocated at startup
+
+	// t0 anchors the trace clock; tracer keeps recent per-batch stage timings
+	t0     time.Time
+	tracer *batchTracer
 }
+
+// now is nanoseconds since the engine started on the monotonic clock
+func (e *Engine) now() int64 { return int64(time.Since(e.t0)) }
+
+// at converts a wall time taken in the pipeline to the trace clock
+func (e *Engine) at(t time.Time) int64 { return int64(t.Sub(e.t0)) }
 
 // TimingStats returns the average per-request queue wait (submit -> infer start),
 // the average per-batch session.Run() time, the average per-batch infer-lane
@@ -388,6 +400,8 @@ func NewEngine(modelPath, libPath string, labels []string, maxBatch int, maxWait
 		unpackCh: make(chan *inferredBatch, unpackChDepth),
 		stopCh:   make(chan struct{}),
 		doneCh:   make(chan struct{}),
+		t0:       time.Now(),
+		tracer:   newBatchTracer(traceHistory),
 	}
 	for _, d := range e.outDims {
 		e.outElems *= int(d)
@@ -489,7 +503,7 @@ func NewEngine(modelPath, libPath string, labels []string, maxBatch int, maxWait
 	e.started = true
 	e.unpackWG.Add(numUnpackers)
 	for i := 0; i < numUnpackers; i++ {
-		go e.unpackLoop()
+		go e.unpackLoop(i)
 	}
 	lanes := numInferLanes
 	if lanes < 1 {
@@ -497,7 +511,7 @@ func NewEngine(modelPath, libPath string, labels []string, maxBatch int, maxWait
 	}
 	e.inferWG.Add(lanes)
 	for i := 0; i < lanes; i++ {
-		go e.inferLoop()
+		go e.inferLoop(i)
 	}
 	go func() { e.inferWG.Wait(); close(e.unpackCh) }()
 	go e.collect()
@@ -608,6 +622,7 @@ func (e *Engine) collect() {
 			return
 		}
 
+		span := &batchSpan{Gather: e.now()}
 		batch := make([]*batchRequest, 0, e.maxBatch)
 		batch = append(batch, first)
 
@@ -625,7 +640,8 @@ func (e *Engine) collect() {
 		}
 		timer.Stop()
 
-		e.packAndSend(batch)
+		span.Pack = e.now()
+		e.packAndSend(batch, span)
 
 		select {
 		case <-e.stopCh:
@@ -786,7 +802,7 @@ func (e *Engine) destroyDeviceSlot(s *deviceSlot) {
 // packAndSend assembles the batch's input tensor and forwards it to the infer
 // lane. A blocking send provides natural backpressure: if the lane is still busy,
 // the gatherer waits here rather than packing unbounded batches ahead.
-func (e *Engine) packAndSend(batch []*batchRequest) {
+func (e *Engine) packAndSend(batch []*batchRequest, span *batchSpan) {
 	n := len(batch)
 	if n == 0 {
 		return
@@ -799,7 +815,8 @@ func (e *Engine) packAndSend(batch []*batchRequest) {
 			copy(slot.stage[i*e.inBytes:(i+1)*e.inBytes], r.input)
 			r.input = nil
 		}
-		e.inferCh <- &packedBatch{dslot: slot, batch: batch}
+		span.Packed = e.now()
+		e.inferCh <- &packedBatch{dslot: slot, batch: batch, span: span}
 		return
 	}
 	if e.slotPool != nil && n == e.maxBatch {
@@ -811,7 +828,8 @@ func (e *Engine) packAndSend(batch []*batchRequest) {
 			copy(slot.inData[i*e.inBytes:(i+1)*e.inBytes], r.input)
 			r.input = nil
 		}
-		e.inferCh <- &packedBatch{slot: slot, batch: batch}
+		span.Packed = e.now()
+		e.inferCh <- &packedBatch{slot: slot, batch: batch, span: span}
 		return
 	}
 	raw := e.batchBufPool.Get().([]byte)
@@ -832,7 +850,8 @@ func (e *Engine) packAndSend(batch []*batchRequest) {
 		failBatch(batch, fmt.Errorf("create input tensor: %w", err))
 		return
 	}
-	e.inferCh <- &packedBatch{inT: inT, raw: raw, batch: batch}
+	span.Packed = e.now()
+	e.inferCh <- &packedBatch{inT: inT, raw: raw, batch: batch, span: span}
 }
 
 // inferLoop is a GPU-owning lane: it runs one packed batch at a time and hands
@@ -842,7 +861,7 @@ func (e *Engine) packAndSend(batch []*batchRequest) {
 // in NewEngine closes unpackCh after the last lane exits. With more than one
 // lane the busy/idle stats aggregate, so busyFrac reads as the average per-lane
 // busy fraction.
-func (e *Engine) inferLoop() {
+func (e *Engine) inferLoop(lane int) {
 	defer e.inferWG.Done()
 	for {
 		idleStart := time.Now()
@@ -852,6 +871,11 @@ func (e *Engine) inferLoop() {
 		}
 		atomic.AddInt64(&e.statIdleNs, int64(time.Since(idleStart)))
 		busyStart := time.Now()
+		span := pb.span
+		if span == nil {
+			span = &batchSpan{}
+		}
+		span.Lane, span.N, span.Infer = lane, len(pb.batch), e.at(busyStart)
 
 		n := len(pb.batch)
 		b := atomic.AddInt64(&e.statBatches, 1)
@@ -884,6 +908,7 @@ func (e *Engine) inferLoop() {
 			}
 			d2hT := time.Now()
 			atomic.AddInt64(&e.statComputeNs, int64(d2hT.Sub(computeT)))
+			span.Split, span.H2DEnd, span.ComputeEnd = true, e.at(computeT), e.at(d2hT)
 			var logits []float32
 			if runErr == nil {
 				logits = e.logitsPool.Get().([]float32)
@@ -893,15 +918,17 @@ func (e *Engine) inferLoop() {
 					e.logitsPool.Put(logits)
 				}
 			}
-			atomic.AddInt64(&e.statD2HNs, int64(time.Since(d2hT)))
-			atomic.AddInt64(&e.statRunNs, int64(time.Since(runT)))
+			endT := time.Now()
+			atomic.AddInt64(&e.statD2HNs, int64(endT.Sub(d2hT)))
+			atomic.AddInt64(&e.statRunNs, int64(endT.Sub(runT)))
+			span.RunEnd = e.at(endT)
 			e.devSlotPool <- s
 			if runErr != nil {
 				failBatch(pb.batch, fmt.Errorf("inference run (device): %w", runErr))
 				atomic.AddInt64(&e.statBusyNs, int64(time.Since(busyStart)))
 				continue
 			}
-			e.unpackCh <- &inferredBatch{logits: logits, batch: pb.batch}
+			e.unpackCh <- &inferredBatch{logits: logits, batch: pb.batch, span: span}
 			atomic.AddInt64(&e.statRunBatchNs, int64(time.Since(busyStart)))
 			atomic.AddInt64(&e.statBusyNs, int64(time.Since(busyStart)))
 			continue
@@ -926,8 +953,10 @@ func (e *Engine) inferLoop() {
 			if runErr == nil {
 				runErr = e.session.RunWithBinding(pb.slot.binding)
 			}
-			atomic.AddInt64(&e.statRunNs, int64(time.Since(runT)))
-			atomic.AddInt64(&e.statComputeNs, int64(time.Since(runT)))
+			endT := time.Now()
+			atomic.AddInt64(&e.statRunNs, int64(endT.Sub(runT)))
+			atomic.AddInt64(&e.statComputeNs, int64(endT.Sub(runT)))
+			span.H2DEnd, span.ComputeEnd, span.RunEnd = e.at(runT), e.at(endT), e.at(endT)
 			if runErr != nil {
 				e.slotPool <- pb.slot
 				failBatch(pb.batch, fmt.Errorf("inference run (bound): %w", runErr))
@@ -960,7 +989,7 @@ func (e *Engine) inferLoop() {
 			// The retrieved value is a fresh OrtValue owned by us; the slot
 			// (input + binding) can recycle immediately.
 			e.slotPool <- pb.slot
-			e.unpackCh <- &inferredBatch{outT: outT, batch: pb.batch}
+			e.unpackCh <- &inferredBatch{outT: outT, batch: pb.batch, span: span}
 			atomic.AddInt64(&e.statRunBatchNs, int64(time.Since(busyStart)))
 			atomic.AddInt64(&e.statBusyNs, int64(time.Since(busyStart)))
 			continue
@@ -970,8 +999,10 @@ func (e *Engine) inferLoop() {
 		outputs := []ort.Value{nil}
 		runT := time.Now()
 		runErr := e.session.Run([]ort.Value{pb.inT}, outputs)
-		atomic.AddInt64(&e.statRunNs, int64(time.Since(runT)))
-		atomic.AddInt64(&e.statComputeNs, int64(time.Since(runT)))
+		endT := time.Now()
+		atomic.AddInt64(&e.statRunNs, int64(endT.Sub(runT)))
+		atomic.AddInt64(&e.statComputeNs, int64(endT.Sub(runT)))
+		span.H2DEnd, span.ComputeEnd, span.RunEnd = e.at(runT), e.at(endT), e.at(endT)
 		pb.inT.Destroy()
 		e.batchBufPool.Put(pb.raw) // safe once the OrtValue no longer pins it
 		if runErr != nil {
@@ -989,7 +1020,7 @@ func (e *Engine) inferLoop() {
 			continue
 		}
 
-		e.unpackCh <- &inferredBatch{outT: outT, batch: pb.batch}
+		e.unpackCh <- &inferredBatch{outT: outT, batch: pb.batch, span: span}
 		atomic.AddInt64(&e.statRunBatchNs, int64(time.Since(busyStart)))
 		atomic.AddInt64(&e.statBusyNs, int64(time.Since(busyStart)))
 	}
@@ -999,7 +1030,7 @@ func (e *Engine) inferLoop() {
 // per-request predictions and delivers each to its caller, preserving index
 // correspondence (row i belongs to batch[i]). Runs in parallel with the infer
 // lanes and the other unpack workers.
-func (e *Engine) unpackLoop() {
+func (e *Engine) unpackLoop(worker int) {
 	defer e.unpackWG.Done()
 	for ib := range e.unpackCh {
 		var logits []float32
@@ -1018,7 +1049,8 @@ func (e *Engine) unpackLoop() {
 		} else {
 			preds, err = splitBatchLogits(logits, len(ib.batch), e.labels)
 		}
-		atomic.AddInt64(&e.statPostNs, int64(time.Since(postT)))
+		postEnd := time.Now()
+		atomic.AddInt64(&e.statPostNs, int64(postEnd.Sub(postT)))
 		if ib.logits != nil {
 			e.logitsPool.Put(ib.logits)
 		} else {
@@ -1030,6 +1062,10 @@ func (e *Engine) unpackLoop() {
 		}
 		for i, r := range ib.batch {
 			r.resultCh <- batchResult{pred: preds[i]}
+		}
+		if s := ib.span; s != nil {
+			s.Worker, s.PostStart, s.PostEnd = worker, e.at(postT), e.at(postEnd)
+			e.tracer.add(*s)
 		}
 	}
 }
