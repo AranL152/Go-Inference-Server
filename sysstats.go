@@ -71,6 +71,16 @@ type sysSample struct {
 	ComputeMs   float64 `json:"compute_ms"`
 	D2HMs       float64 `json:"d2h_ms"`
 	PostMs      float64 `json:"post_ms"`
+
+	// Go runtime: garbage made per request, how often and how hard GC runs,
+	// and how long ready goroutines wait for a CPU
+	AllocBytesPerReq float64 `json:"alloc_bytes_per_req"`
+	AllocsPerReq     float64 `json:"allocs_per_req"`
+	GCPerSec         float64 `json:"gc_per_sec"`
+	GCCPUPct         float64 `json:"gc_cpu_pct"`
+	GCPauseP99Us     float64 `json:"gc_pause_p99_us"`
+	SchedP99Us       float64 `json:"sched_p99_us"`
+	HeapLiveMB       float64 `json:"heap_live_mb"`
 }
 
 // latencyWindow collects request latencies between samples
@@ -270,11 +280,12 @@ type sampler struct {
 	prevCPU   []cpuTimes
 	prevTicks float64
 	prev      pipelineCounters
+	prevRT    runtimeCounters
 	prevT     time.Time
 }
 
 func newSampler(m *sysMonitor, gpu *nvmlGPU) *sampler {
-	sp := &sampler{m: m, gpu: gpu, prevCPU: readCPUTimes(), prev: m.counters(), prevT: time.Now()}
+	sp := &sampler{m: m, gpu: gpu, prevCPU: readCPUTimes(), prev: m.counters(), prevRT: readRuntime(), prevT: time.Now()}
 	sp.prevTicks, _ = readProc()
 	return sp
 }
@@ -300,7 +311,9 @@ func (sp *sampler) step(now time.Time) sysSample {
 
 	cur := sp.m.counters()
 	fillPipeline(&s, sp.prev, cur, dt)
-	sp.prev = cur
+	rt := readRuntime()
+	fillRuntime(&s, sp.prevRT, rt, float64(max(cur.reqs-sp.prev.reqs, 0)), dt)
+	sp.prev, sp.prevRT = cur, rt
 	s.P50Ms, s.P99Ms = recentLatency.drain()
 	sp.prevT = now
 
