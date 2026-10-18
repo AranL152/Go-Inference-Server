@@ -293,7 +293,7 @@
 
 	{#if view === 'analysis'}
 		{#key runId}
-			<Bottleneck {samples} {cfg} span={runId ? samples.length : 5} />
+			<Bottleneck {samples} {cfg} span={runId ? samples.length : 5} run={!!runId} />
 
 			<div class="grid items-start gap-4 lg:grid-cols-2">
 				<CpuProfile live={!runId} data={run?.cpu ?? null} />

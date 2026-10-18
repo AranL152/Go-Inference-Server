@@ -3,13 +3,18 @@
 	import type { Sample, ServerConfig } from '$lib/stats';
 
 	// span is how many busy seconds to average: a few for live, the whole run for a job
-	let { samples, cfg, span = 5 }: { samples: Sample[]; cfg: ServerConfig | null; span?: number } = $props();
+	let {
+		samples,
+		cfg,
+		span = 5,
+		run = false
+	}: { samples: Sample[]; cfg: ServerConfig | null; span?: number; run?: boolean } = $props();
 
 	const recent = $derived(samples.filter((x) => x.req_per_sec > 0).slice(-span));
 	const mean = (f: (x: Sample) => number) =>
 		recent.length ? recent.reduce((a, x) => a + f(x), 0) / recent.length : 0;
 	const lastBusy = $derived(recent.at(-1)?.t ?? 0);
-	const stale = $derived(span <= 10 && lastBusy > 0 && (samples.at(-1)?.t ?? 0) - lastBusy > 5000);
+	const stale = $derived(!run && lastBusy > 0 && (samples.at(-1)?.t ?? 0) - lastBusy > 5000);
 
 	const rows = $derived.by(() => {
 		if (!cfg || !recent.length) return [];
@@ -26,7 +31,11 @@
 		}
 		const busy = mean((x) => x.gpu?.util ?? 0);
 		if (busy > 3) {
-			out.push({ name: 'GPU', how: `${Math.round(rps)} img/s at ${busy.toFixed(0)}% busy`, cap: rps / (busy / 100) });
+			out.push({
+				name: 'GPU',
+				how: `${Math.round(rps)} img/s at ${busy.toFixed(0)}% busy`,
+				cap: rps / (busy / 100)
+			});
 		}
 		const postMs = mean((x) => x.post_ms);
 		const batch = mean((x) => x.avg_batch);
@@ -49,7 +58,9 @@
 			: ''
 	);
 	const sub = $derived(
-		stale ? `last busy at ${new Date(lastBusy).toLocaleTimeString()}` : `ceiling of each stage from its cost per item, ${span <= 10 ? `last ${recent.length} busy s` : 'whole run'}`
+		stale
+			? `last busy at ${new Date(lastBusy).toLocaleTimeString()}`
+			: `ceiling of each stage from its cost per item, ${run ? 'whole run' : `last ${recent.length} busy s`}`
 	);
 </script>
 
@@ -62,19 +73,27 @@
 				<div>
 					<div class="mb-1 flex flex-wrap items-baseline justify-between gap-x-3 text-sm">
 						<span class="text-[var(--fg)] {i === 0 ? 'font-semibold' : ''}">{r.name}</span>
-						<span class="text-xs text-[var(--text-muted)] tabular-nums">{r.how} = <span class="text-[var(--fg)]">{n(r.cap)} img/s</span></span>
+						<span class="text-xs text-[var(--text-muted)] tabular-nums"
+							>{r.how} = <span class="text-[var(--fg)]">{n(r.cap)} img/s</span></span
+						>
 					</div>
 					<div class="relative h-3 rounded-full bg-[var(--bg)]">
 						<div
 							class="h-full rounded-full {i === 0 ? 'bg-[var(--accent)]' : 'bg-[var(--border)]'}"
 							style="width: {Math.min(100, (100 * r.cap) / scale)}%"
 						></div>
-						<div class="absolute -top-1 h-5 w-0.5 bg-[var(--fg)]" style="left: {(100 * rps) / scale}%" title="throughput"></div>
+						<div
+							class="absolute -top-1 h-5 w-0.5 bg-[var(--fg)]"
+							style="left: {(100 * rps) / scale}%"
+							title="throughput"
+						></div>
 					</div>
 				</div>
 			{/each}
 			<p class="text-xs text-[var(--text-muted)] tabular-nums">
-				<span class="mr-1 inline-block h-3 w-0.5 translate-y-0.5 bg-[var(--fg)]"></span>throughput {n(rps)} img/s
+				<span class="mr-1 inline-block h-3 w-0.5 translate-y-0.5 bg-[var(--fg)]"></span>throughput {n(
+					rps
+				)} img/s
 			</p>
 		</div>
 	{/if}

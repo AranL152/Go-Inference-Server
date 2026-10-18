@@ -142,6 +142,7 @@ export interface NsysSummary {
 
 // short function names: drop the package path and keep receiver and name
 export function shortFunc(f: string) {
+	if (!f) return '(unsymbolized)';
 	const i = f.lastIndexOf('/');
 	return i >= 0 ? f.slice(i + 1) : f;
 }
