@@ -59,7 +59,9 @@
 				onclick={capture}
 			/>{/if}{/snippet}
 	{#if error}<p class="mb-3 text-sm text-[var(--status-critical)]">{error}</p>{/if}
-	{#if !p}
+	{#if p && !stages.length}
+		<p class="text-sm text-[var(--text-muted)]">The server was idle during the last capture, so it has no samples.</p>
+	{:else if !p}
 		<p class="text-sm text-[var(--text-muted)]">
 			{live
 				? 'No profile yet. Capture one while the server is under load.'

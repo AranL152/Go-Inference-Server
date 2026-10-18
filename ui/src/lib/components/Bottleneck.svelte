@@ -54,7 +54,11 @@
 	const sub = $derived(
 		stale
 			? `last busy at ${new Date(lastBusy).toLocaleTimeString()}`
-			: `ceiling of each stage from its cost per item, ${run ? 'whole run' : `last ${recent.length} busy s`}`
+			: run
+				? 'ceiling of each stage from its cost per item, whole run'
+				: recent.length
+					? `ceiling of each stage from its cost per item, last ${recent.length} busy s`
+					: 'ceiling of each stage from its cost per item'
 	);
 </script>
 
