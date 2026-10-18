@@ -1,87 +1,87 @@
 {
  "model": "resnet18_int8_u8.onnx",
- "seconds": 3.3,
- "gpu_busy_pct": 42.8,
- "compute_pct": 31.7,
- "copy_pct": 11.4,
- "copy_hidden_pct": 2.2,
- "idle_gaps": 64003,
+ "seconds": 3.42,
+ "gpu_busy_pct": 43.6,
+ "compute_pct": 35.2,
+ "copy_pct": 12.7,
+ "copy_hidden_pct": 33.9,
+ "idle_gaps": 66100,
  "idle_gap_p50_us": 1.2,
- "idle_gap_p99_us": 389.7,
- "kernels_per_s": 18340.0,
- "kernel_avg_us": 17.3,
+ "idle_gap_p99_us": 456.4,
+ "kernels_per_s": 20272.0,
+ "kernel_avg_us": 17.4,
  "short_kernel_pct": 30.0,
- "launch_avg_us": 33.5,
- "threads_blocked_on_gpu": 0.45,
+ "launch_avg_us": 24.2,
+ "threads_blocked_on_gpu": 0.35,
  "h2d": {
-  "count": 2018,
-  "mb": 9714.6,
-  "avg_kb": 4814.0,
-  "gb_per_s": 26.7,
+  "count": 2310,
+  "mb": 11116.8,
+  "avg_kb": 4812.5,
+  "gb_per_s": 26.5,
   "pinned_pct": 99.9
  },
  "d2h": {
-  "count": 2018,
-  "mb": 258.1,
+  "count": 2309,
+  "mb": 295.3,
   "avg_kb": 127.9,
-  "gb_per_s": 22.46,
+  "gb_per_s": 22.21,
   "pinned_pct": 0.0
  },
  "top_kernels": [
   {
    "name": "sm80_xmma_fprop_implicit_gemm_interleaved_i8i8_i8i32_f32_nchw_vect_c_32k",
-   "calls": 30285,
-   "total_ms": 714.61,
-   "avg_us": 23.6,
-   "share_pct": 68.3
+   "calls": 34639,
+   "total_ms": 822.03,
+   "avg_us": 23.7,
+   "share_pct": 68.4
   },
   {
    "name": "sm80_xmma_fprop_avdt_dense_chw_int8int8_tilesize16x16_k64_fltsteps4_thre",
-   "calls": 2019,
-   "total_ms": 75.08,
+   "calls": 2310,
+   "total_ms": 85.86,
    "avg_us": 37.2,
-   "share_pct": 7.2
+   "share_pct": 7.1
   },
   {
    "name": "generatedNativePointwise",
-   "calls": 6057,
-   "total_ms": 61.87,
-   "avg_us": 10.2,
+   "calls": 6928,
+   "total_ms": 71.12,
+   "avg_us": 10.3,
    "share_pct": 5.9
   },
   {
    "name": "sm75_xmma_fprop_implicit_gemm_interleaved_i8i8_i8i32_f32_nchw_vect_c_32k",
-   "calls": 8076,
-   "total_ms": 61.23,
+   "calls": 9236,
+   "total_ms": 70.33,
    "avg_us": 7.6,
-   "share_pct": 5.9
+   "share_pct": 5.8
   },
   {
    "name": "sm72_xmma_pooling_IMMA_NCxHW32_generic_kMAX_execute_kernel_trt",
-   "calls": 2019,
-   "total_ms": 51.36,
-   "avg_us": 25.4,
+   "calls": 2310,
+   "total_ms": 58.92,
+   "avg_us": 25.5,
    "share_pct": 4.9
   },
   {
    "name": "__myl_CastTranMulAdd_0x6643727ff8a7beb1107cb31499a9f2d7_com",
-   "calls": 2016,
-   "total_ms": 41.99,
-   "avg_us": 20.8,
+   "calls": 2304,
+   "total_ms": 48.19,
+   "avg_us": 20.9,
    "share_pct": 4.0
   },
   {
    "name": "copyVectorizedKernel",
-   "calls": 4038,
-   "total_ms": 18.0,
+   "calls": 4619,
+   "total_ms": 20.61,
    "avg_us": 4.5,
    "share_pct": 1.7
   },
   {
    "name": "copyPackedKernel",
-   "calls": 2019,
-   "total_ms": 11.59,
-   "avg_us": 5.7,
+   "calls": 2309,
+   "total_ms": 13.32,
+   "avg_us": 5.8,
    "share_pct": 1.1
   }
  ]

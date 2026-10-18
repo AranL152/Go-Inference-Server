@@ -871,6 +871,17 @@ func (e *Engine) packAndSend(batch []*batchRequest, span *batchSpan) {
 func (e *Engine) inferLoop(lane int) {
 	defer e.inferWG.Done()
 	setStage(stageInfer)
+	// each lane copies on its own stream so its copies can overlap other lanes' kernels
+	var stream *cudaStream
+	if e.devSlotPool != nil {
+		var err error
+		if stream, err = newCudaStream(); err != nil {
+			log.Printf("lane %d: %v, copying on the default stream", lane, err)
+			stream = nil
+		} else {
+			defer stream.destroy()
+		}
+	}
 	r := region(stageInfer)
 	defer func() { r.End() }()
 	for {
@@ -912,7 +923,12 @@ func (e *Engine) inferLoop(lane int) {
 			// staleness of CPU-backed bound inputs applies.
 			s := pb.dslot
 			runT := time.Now()
-			runErr := cudaMemcpyH2D(s.devIn, s.stagePtr, n*e.inBytes)
+			var runErr error
+			if stream != nil {
+				runErr = stream.copyH2D(s.devIn, s.stagePtr, n*e.inBytes)
+			} else {
+				runErr = cudaMemcpyH2D(s.devIn, s.stagePtr, n*e.inBytes)
+			}
 			computeT := time.Now()
 			atomic.AddInt64(&e.statH2DNs, int64(computeT.Sub(runT)))
 			if runErr == nil {
@@ -924,8 +940,12 @@ func (e *Engine) inferLoop(lane int) {
 			var logits []float32
 			if runErr == nil {
 				logits = e.outBufs.get()
-				runErr = cudaMemcpyD2H(unsafe.Pointer(&logits[0]), s.devOut,
-					n*e.outElems*4)
+				// Run returns once ORT has synchronised its stream, so the output is complete
+				if stream != nil {
+					runErr = stream.copyD2H(unsafe.Pointer(&logits[0]), s.devOut, n*e.outElems*4)
+				} else {
+					runErr = cudaMemcpyD2H(unsafe.Pointer(&logits[0]), s.devOut, n*e.outElems*4)
+				}
 				if runErr != nil {
 					e.outBufs.put(logits)
 				}

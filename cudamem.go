@@ -53,3 +53,31 @@ func cudaMemcpyD2H(dst, src unsafe.Pointer, n int) error {
 	return cudaErr("cudaMemcpy D2H",
 		C.cudaMemcpy(dst, src, C.size_t(n), C.cudaMemcpyDeviceToHost))
 }
+
+// cudaStream is a non-blocking CUDA stream. Copies issued on it do not wait
+// for work on other streams, so one lane's copy can run under another lane's
+// kernels instead of queueing behind them on the legacy default stream.
+type cudaStream struct{ s C.cudaStream_t }
+
+func newCudaStream() (*cudaStream, error) {
+	st := &cudaStream{}
+	return st, cudaErr("cudaStreamCreate", C.cudaStreamCreateWithFlags(&st.s, C.cudaStreamNonBlocking))
+}
+
+func (st *cudaStream) destroy() { C.cudaStreamDestroy(st.s) }
+
+// copyH2D copies n bytes host -> device on this stream and waits for it.
+func (st *cudaStream) copyH2D(dst, src unsafe.Pointer, n int) error {
+	if err := cudaErr("cudaMemcpyAsync H2D", C.cudaMemcpyAsync(dst, src, C.size_t(n), C.cudaMemcpyHostToDevice, st.s)); err != nil {
+		return err
+	}
+	return cudaErr("cudaStreamSynchronize", C.cudaStreamSynchronize(st.s))
+}
+
+// copyD2H copies n bytes device -> host on this stream and waits for it.
+func (st *cudaStream) copyD2H(dst, src unsafe.Pointer, n int) error {
+	if err := cudaErr("cudaMemcpyAsync D2H", C.cudaMemcpyAsync(dst, src, C.size_t(n), C.cudaMemcpyDeviceToHost, st.s)); err != nil {
+		return err
+	}
+	return cudaErr("cudaStreamSynchronize", C.cudaStreamSynchronize(st.s))
+}

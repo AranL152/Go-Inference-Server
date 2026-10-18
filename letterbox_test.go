@@ -93,8 +93,8 @@ func randomRGBA(w, h int, seed int64) *image.RGBA {
 // every pixel, for downscales, upscales and exact fits
 func TestLetterboxMatchesFloatReference(t *testing.T) {
 	imgs := map[string]*image.RGBA{
-		"dog.jpg":       decoded(t, "testdata/dog.jpg"),
-		"street.jpg":    decoded(t, "testdata/street.jpg"),
+		"dog.jpg":        decoded(t, "testdata/dog.jpg"),
+		"street.jpg":     decoded(t, "testdata/street.jpg"),
 		"noise 1000x700": randomRGBA(1000, 700, 1),
 		"noise 320x500":  randomRGBA(320, 500, 2),
 		"noise 640x427":  randomRGBA(640, 427, 3),
