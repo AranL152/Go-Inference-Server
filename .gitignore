@@ -21,8 +21,9 @@
 # Saved detection jobs and uploads
 /jobs/
 
-# Nsight Compute reports (open with ncu-ui) are large so only the JSON summaries are kept
+# Nsight reports (open with ncu-ui or nsys-ui) are large so only the JSON summaries are kept
 /profiles/*.ncu-rep
+/profiles/*.nsys-rep
 
 # Raw trace and CPU profile captures from the dashboard
 /profiles/trace-*

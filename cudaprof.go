@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // handleCudaProfiler is a no op unless the server runs under ncu or nsys with profiling off at start
@@ -35,9 +36,14 @@ func handleCudaProfiler(w http.ResponseWriter, r *http.Request) {
 
 // handleProfiles serves the kernel summaries written by profile_kernels.sh
 func handleProfiles(w http.ResponseWriter, r *http.Request) {
+	nsys := r.URL.Query().Get("kind") == "nsys"
 	paths, _ := filepath.Glob("profiles/*.json")
 	out := []json.RawMessage{}
 	for _, p := range paths {
+		name := filepath.Base(p)
+		if strings.HasSuffix(name, "-latest.json") || strings.HasSuffix(name, ".nsys.json") != nsys {
+			continue
+		}
 		if b, err := os.ReadFile(p); err == nil && json.Valid(b) {
 			out = append(out, b)
 		}
