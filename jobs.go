@@ -23,8 +23,9 @@ import (
 	"time"
 )
 
-// jobWorkers is how many images a job keeps in flight; set it with setJobWorkers
-var jobWorkers = 256
+// jobWorkers is how many images a job keeps in flight; set it with setJobWorkers.
+// 128 keeps 3 lanes of 16 image batches full; more only lengthens the queue.
+var jobWorkers = 128
 
 // jobReadBufs holds the JPEG bytes of the images job workers are processing
 var jobReadBufs = newFreeList(jobWorkers, func() *bytes.Buffer { return new(bytes.Buffer) })
