@@ -1,6 +1,6 @@
 <script lang="ts">
 	import Panel from './Panel.svelte';
-	import type { Sample, ServerConfig } from '$lib/stats';
+	import { median, type Sample, type ServerConfig } from '$lib/stats';
 
 	// span is how many busy seconds to average: a few for live, the whole run for a job
 	let {
@@ -11,8 +11,7 @@
 	}: { samples: Sample[]; cfg: ServerConfig | null; span?: number; run?: boolean } = $props();
 
 	const recent = $derived(samples.filter((x) => x.req_per_sec > 0).slice(-span));
-	const mean = (f: (x: Sample) => number) =>
-		recent.length ? recent.reduce((a, x) => a + f(x), 0) / recent.length : 0;
+	const mean = (f: (x: Sample) => number) => median(recent, f);
 	const lastBusy = $derived(recent.at(-1)?.t ?? 0);
 	const stale = $derived(!run && lastBusy > 0 && (samples.at(-1)?.t ?? 0) - lastBusy > 5000);
 

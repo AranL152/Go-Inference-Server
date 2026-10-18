@@ -46,7 +46,7 @@
 			.catch((e) => (runError = (e as Error).message));
 	});
 	const samples = $derived(runId ? (run?.samples ?? []) : liveSamples);
-	const win = $derived(runId ? Math.max(samples.length, 10) : range);
+	const win = $derived(runId ? Math.max(samples.length, 2) : range);
 	const runJob = $derived(jobs.find((j) => j.id === runId));
 
 	function pickRun(id: string) {
@@ -151,6 +151,7 @@
 			}
 		];
 	});
+	const failing = $derived(alarms.filter((a) => a.level !== 'ok'));
 	const levelStyle: Record<Level, { color: string; icon: string; label: string }> = {
 		ok: { color: 'var(--status-good)', icon: '✓', label: 'OK' },
 		warning: { color: 'var(--status-warning)', icon: '▲', label: 'Warning' },
@@ -332,52 +333,63 @@
 			breakdown
 		)}
 
-		<GpuTimeline {model} />
+		<!-- Nsight captures are made separately with profile_gpu.sh, so they are not part of a job run -->
+		{#if !runId}<GpuTimeline {model} />{/if}
 		{#snippet kp()}<KernelProfile {model} />{/snippet}
 		{@render card('GPU kernels', 'Nsight Compute hardware counters for one batch', kp)}
 
-		<div>
-			<h2 class="mb-3 text-sm font-semibold text-[var(--text-muted)]">Hardware health</h2>
-			<div class="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
-				{#each numbers as n}
-					<div class="overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface)]">
-						<div class="px-3 pt-2">
-							<div class="text-xs text-[var(--text-muted)]">{n.label}</div>
-							<div class="text-lg font-semibold text-[var(--fg)] tabular-nums">
-								{n.value}<span class="ml-1 text-xs font-normal text-[var(--text-muted)]"
-									>{n.unit}</span
-								>
+		{#if !runId}
+			<div>
+				<h2 class="mb-3 text-sm font-semibold text-[var(--text-muted)]">Hardware health</h2>
+				<div class="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
+					{#each numbers as n}
+						<div
+							class="overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface)]"
+						>
+							<div class="px-3 pt-2">
+								<div class="text-xs text-[var(--text-muted)]">{n.label}</div>
+								<div class="text-lg font-semibold text-[var(--fg)] tabular-nums">
+									{n.value}<span class="ml-1 text-xs font-normal text-[var(--text-muted)]"
+										>{n.unit}</span
+									>
+								</div>
+							</div>
+							<div class="px-1 pb-1">
+								<Chart
+									series={one(n.label, n.spark)}
+									window={win}
+									height={28}
+									compact
+									frame={false}
+								/>
 							</div>
 						</div>
-						<div class="px-1 pb-1">
-							<Chart
-								series={one(n.label, n.spark)}
-								window={win}
-								height={28}
-								compact
-								frame={false}
-							/>
+					{/each}
+				</div>
+				{#if !failing.length}
+					<p class="mt-3 text-xs text-[var(--text-muted)]">
+						<span style="color: var(--status-good)">✓</span> All {alarms.length} health checks OK: GPU
+						throttling, temperature, power limit, p99 latency, CPU and host memory
+					</p>
+				{/if}
+				<div class="mt-3 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
+					{#each failing as a}
+						<div
+							class="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2"
+							style="border-left: 4px solid {levelStyle[a.level].color}"
+						>
+							<div class="flex items-center justify-between gap-2">
+								<span class="truncate text-xs text-[var(--fg)]">{a.name}</span>
+								<span class="text-xs font-bold" style="color: {levelStyle[a.level].color}"
+									>{levelStyle[a.level].icon}</span
+								>
+							</div>
+							<div class="truncate text-[11px] text-[var(--text-muted)]">{a.detail}</div>
 						</div>
-					</div>
-				{/each}
+					{/each}
+				</div>
 			</div>
-			<div class="mt-3 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
-				{#each alarms as a}
-					<div
-						class="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2"
-						style="border-left: 4px solid {levelStyle[a.level].color}"
-					>
-						<div class="flex items-center justify-between gap-2">
-							<span class="truncate text-xs text-[var(--fg)]">{a.name}</span>
-							<span class="text-xs font-bold" style="color: {levelStyle[a.level].color}"
-								>{levelStyle[a.level].icon}</span
-							>
-						</div>
-						<div class="truncate text-[11px] text-[var(--text-muted)]">{a.detail}</div>
-					</div>
-				{/each}
-			</div>
-		</div>
+		{/if}
 	{:else if view === 'series'}
 		<h2 class="text-sm font-semibold text-[var(--text-muted)]">Pipeline</h2>
 		<div class="grid gap-4 lg:grid-cols-2">
@@ -602,30 +614,6 @@
 				/>
 			{/snippet}
 			{@render card('Host memory', `of ${s ? gb(s.mem_total_mb) : '0'} GB`, ram)}
-			{#snippet cores()}
-				<div class="grid grid-cols-4 gap-2 md:grid-cols-8">
-					{#each s?.cores ?? [] as c, i}
-						<div>
-							<Chart
-								series={one(
-									`CPU ${i}`,
-									samples.map((x) => x.cores[i] ?? 0)
-								)}
-								window={win}
-								max={100}
-								height={40}
-								compact
-							/>
-							<div
-								class="mt-0.5 flex justify-between text-[10px] text-[var(--text-muted)] tabular-nums"
-							>
-								<span>CPU {i}</span><span>{c.toFixed(0)}%</span>
-							</div>
-						</div>
-					{/each}
-				</div>
-			{/snippet}
-			{@render card('Per core', 'percent busy', cores, true)}
 			{#snippet gor()}<Chart
 					series={one(
 						'Goroutines',

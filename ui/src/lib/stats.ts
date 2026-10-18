@@ -137,7 +137,13 @@ export interface NsysSummary {
 	threads_blocked_on_gpu: number;
 	h2d: CopyStats;
 	d2h: CopyStats;
-	top_kernels: { name: string; calls: number; total_ms: number; avg_us: number; share_pct: number }[];
+	top_kernels: {
+		name: string;
+		calls: number;
+		total_ms: number;
+		avg_us: number;
+		share_pct: number;
+	}[];
 }
 
 // short function names: drop the package path and keep receiver and name
@@ -168,4 +174,13 @@ export interface RunPerf {
 	batching: BatchingStats;
 	cpu: CpuSummary | null;
 	trace: TraceSummary | null;
+}
+
+// median of f over xs; runs average over ramp up and warm up seconds, so the
+// middle value describes steady state better than the mean
+export function median<T>(xs: T[], f: (x: T) => number) {
+	if (!xs.length) return 0;
+	const v = xs.map(f).sort((a, b) => a - b);
+	const m = v.length >> 1;
+	return v.length % 2 ? v[m] : (v[m - 1] + v[m]) / 2;
 }

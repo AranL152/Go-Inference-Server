@@ -42,22 +42,45 @@
 	const avgBusy = (s: StageTime) => s.seconds / (t?.seconds || 1);
 </script>
 
-<Panel title="Goroutine time by stage" sub="Go execution trace: where each stage's goroutines spent their time">
-	{#snippet actions()}{#if live}<CaptureButton {busy} seconds={SECONDS} onclick={capture} />{/if}{/snippet}
+<Panel
+	title="Goroutine time by stage"
+	sub="Go execution trace: where each stage's goroutines spent their time"
+>
+	{#snippet actions()}{#if live}<CaptureButton
+				{busy}
+				seconds={SECONDS}
+				onclick={capture}
+			/>{/if}{/snippet}
 	{#if error}<p class="mb-3 text-sm text-[var(--status-critical)]">{error}</p>{/if}
 	{#if !t}
-		<p class="text-sm text-[var(--text-muted)]">{live ? 'No trace yet. Capture one while the server is under load.' : 'The run ended before a trace could be taken.'}</p>
+		<p class="text-sm text-[var(--text-muted)]">
+			{live
+				? 'No trace yet. Capture one while the server is under load.'
+				: 'The run ended before a trace could be taken.'}
+		</p>
 	{:else}
 		<div class="space-y-3">
 			{#each shown as s}
 				<div>
 					<div class="mb-0.5 flex flex-wrap justify-between gap-x-2 text-xs">
-						<span class="text-[var(--fg)]">{s.stage} <span class="text-[var(--text-muted)]">· {s.goroutines} goroutines, {avgBusy(s).toFixed(1)} on average</span></span>
-						<span class="text-[var(--text-muted)] tabular-nums">CPU wait p99 {s.sched_p99_us >= 1000 ? `${(s.sched_p99_us / 1000).toFixed(1)} ms` : `${s.sched_p99_us.toFixed(0)} µs`}</span>
+						<span class="text-[var(--fg)]"
+							>{s.stage}
+							<span class="text-[var(--text-muted)]"
+								>· {s.goroutines} goroutines, {avgBusy(s).toFixed(1)} on average</span
+							></span
+						>
+						<span class="text-[var(--text-muted)] tabular-nums"
+							>CPU wait p99 {s.sched_p99_us >= 1000
+								? `${(s.sched_p99_us / 1000).toFixed(1)} ms`
+								: `${s.sched_p99_us.toFixed(0)} µs`}</span
+						>
 					</div>
 					<div class="flex h-2.5 overflow-hidden rounded-full bg-[var(--bg)]">
 						{#each parts as p}
-							<div style="width: {s[p.key]}%; background: var({p.css})" title="{p.label} {s[p.key].toFixed(1)}%"></div>
+							<div
+								style="width: {s[p.key]}%; background: var({p.css})"
+								title="{p.label} {s[p.key].toFixed(1)}%"
+							></div>
 						{/each}
 					</div>
 					{#if s.waits?.length && s.blocked_pct > 5}
@@ -70,12 +93,12 @@
 		</div>
 		<div class="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-[var(--text-muted)]">
 			{#each parts as p}
-				<span class="flex items-center gap-1.5"><span class="inline-block h-2 w-3 rounded-sm" style="background: var({p.css})"></span>{p.label}</span>
+				<span class="flex items-center gap-1.5"
+					><span class="inline-block h-2 w-3 rounded-sm" style="background: var({p.css})"
+					></span>{p.label}</span
+				>
 			{/each}
 		</div>
-		<p class="mt-3 text-xs text-[var(--text-muted)] tabular-nums">
-			GC: {t.gcs} cycles in {t.seconds.toFixed(1)} s, mark phase running {t.gc_mark_pct.toFixed(0)}% of the time, {t.stw_ms.toFixed(1)} ms stop-the-world
-		</p>
 		<CaptureFooter file={t.file} taken={t.taken} command="go tool trace profiles/{t.file}" />
 	{/if}
 </Panel>

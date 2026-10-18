@@ -27,19 +27,23 @@
 	let chosen = $state('');
 
 	onMount(async () => {
-		const r = await fetch('/api/profiles').then((r) => r.json()).catch(() => ({ profiles: [] }));
+		const r = await fetch('/api/profiles')
+			.then((r) => r.json())
+			.catch(() => ({ profiles: [] }));
 		profiles = r.profiles;
 	});
 	// follow the running model until the user picks another
 	const p = $derived(
-		profiles.find((x) => x.model === chosen) ?? profiles.find((x) => x.model === model) ?? profiles[0]
+		profiles.find((x) => x.model === chosen) ??
+			profiles.find((x) => x.model === model) ??
+			profiles[0]
 	);
 </script>
 
 {#if profiles.length === 0}
 	<p class="py-6 text-sm text-[var(--text-muted)]">
-		No kernel profile yet. Run <code class="font-mono">./profile_kernels.sh MODEL</code> to profile one batch
-		with Nsight Compute.
+		No kernel profile yet. Run <code class="font-mono">./profile_kernels.sh MODEL</code> to profile one
+		batch with Nsight Compute.
 	</p>
 {:else if p}
 	<div class="mb-4 flex flex-wrap items-center gap-2 text-xs">
@@ -48,7 +52,8 @@
 				onclick={() => (chosen = x.model)}
 				class="rounded-full border px-2 py-0.5 font-mono {x.model === p?.model
 					? 'border-[var(--accent)] text-[var(--fg)]'
-					: 'border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--fg)]'}">{x.model}</button
+					: 'border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--fg)]'}"
+				>{x.model}</button
 			>
 		{/each}
 		<span class="text-[var(--text-muted)]">one batch of 16 profiled with Nsight Compute</span>
@@ -76,7 +81,7 @@
 				</tr>
 			</thead>
 			<tbody>
-				{#each p.top_kernels as k}
+				{#each p.top_kernels.slice(0, 5) as k}
 					<tr class="border-b border-[var(--border)] text-[var(--fg)] tabular-nums">
 						<td class="max-w-80 truncate py-1.5 pr-3 font-mono" title={k.name}>{k.name}</td>
 						<td class="py-1.5 pr-3 text-right">{k.calls}</td>

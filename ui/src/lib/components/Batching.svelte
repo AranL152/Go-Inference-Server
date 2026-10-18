@@ -23,7 +23,10 @@
 	const peak = $derived(Math.max(1, ...(b?.sizes ?? [])));
 </script>
 
-<Panel title="Batching" sub={live ? 'dynamic batches formed in the last 10 s' : 'dynamic batches formed during the run'}>
+<Panel
+	title="Batching"
+	sub={live ? 'dynamic batches formed in the last 10 s' : 'dynamic batches formed during the run'}
+>
 	{#if !b || !b.batches}
 		<p class="text-sm text-[var(--text-muted)]">No batches{live ? ' in the last 10 s' : ''}.</p>
 	{:else}
@@ -31,7 +34,9 @@
 			{#each b.sizes as count, i}
 				<div class="flex h-full flex-1 flex-col justify-end" title="{count} batches of {i + 1}">
 					<div
-						class="rounded-t-sm {i + 1 === b.max_batch ? 'bg-[var(--cat-3)]' : 'bg-[var(--accent)]'}"
+						class="rounded-t-sm {i + 1 === b.max_batch
+							? 'bg-[var(--cat-3)]'
+							: 'bg-[var(--accent)]'}"
 						style="height: {(100 * count) / peak}%; min-height: {count ? 2 : 0}px"
 					></div>
 				</div>
