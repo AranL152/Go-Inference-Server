@@ -179,11 +179,6 @@
 							/>{/if}</svg
 					>
 				</button>
-				<div class="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-[var(--accent)] text-white">
-					<svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
-						><rect x="6" y="6" width="12" height="12" rx="2" /><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4" /></svg
-					>
-				</div>
 				<span class="truncate text-sm font-semibold text-[var(--fg)]">Inference Server</span>
 			</div>
 			<button
