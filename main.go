@@ -183,7 +183,8 @@ func main() {
 	mux.HandleFunc("/health", srv.handleHealth)
 	mux.HandleFunc("/stats", srv.handleStats)
 	mux.HandleFunc("/metrics", srv.handleMetrics)
-	jobs := &jobStore{s: srv, dir: *jobsDir}
+	mon := startSysMonitor(engine, cpuPool)
+	jobs := &jobStore{s: srv, mon: mon, dir: *jobsDir}
 	if jobs.dir != "" {
 		if err := os.MkdirAll(jobs.dir, 0o755); err != nil {
 			log.Fatalf("FATAL: jobs dir: %v", err)
@@ -191,7 +192,7 @@ func main() {
 		jobs.load()
 	}
 	jobs.routes(mux)
-	mux.HandleFunc("GET /api/system", startSysMonitor(engine, cpuPool).handleSystem)
+	mux.HandleFunc("GET /api/system", mon.handleSystem)
 	mux.HandleFunc("GET /api/batching", engine.handleBatching)
 	mux.HandleFunc("POST /api/profile/trace", handleTraceCapture)
 	mux.HandleFunc("GET /api/profile/trace", handleLatest("trace"))

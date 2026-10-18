@@ -86,13 +86,13 @@ type batchingStats struct {
 	LaneWaitP99 float64 `json:"lane_wait_p99_ms"`
 }
 
-// summarizeBatches describes the spans that reached a lane at or after from
-func summarizeBatches(spans []batchSpan, maxBatch int, maxWait time.Duration, from int64) batchingStats {
+// summarizeBatches describes the spans that reached a lane between from and to
+func summarizeBatches(spans []batchSpan, maxBatch int, maxWait time.Duration, from, to int64) batchingStats {
 	st := batchingStats{MaxBatch: maxBatch, MaxWaitMs: float64(maxWait) / 1e6, Sizes: make([]int, maxBatch)}
 	var fill, laneWait []float64
 	images := 0
 	for _, s := range spans {
-		if s.Infer < from || s.N < 1 || s.N > maxBatch {
+		if s.Infer < from || s.Infer > to || s.N < 1 || s.N > maxBatch {
 			continue
 		}
 		st.Batches++
@@ -118,6 +118,6 @@ func summarizeBatches(spans []batchSpan, maxBatch int, maxWait time.Duration, fr
 const batchingWindow = 10 * time.Second
 
 func (e *Engine) handleBatching(w http.ResponseWriter, r *http.Request) {
-	from := e.now() - int64(batchingWindow)
-	writeJSON(w, http.StatusOK, summarizeBatches(e.tracer.since(-1), e.maxBatch, e.maxWait, from))
+	now := e.now()
+	writeJSON(w, http.StatusOK, summarizeBatches(e.tracer.since(-1), e.maxBatch, e.maxWait, now-int64(batchingWindow), now))
 }

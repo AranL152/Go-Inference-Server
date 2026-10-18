@@ -208,9 +208,10 @@ func TestSummarizeBatches(t *testing.T) {
 	full := batchSpan{N: 4, Gather: 100 * ms, Pack: 102 * ms, Packed: 103 * ms, Infer: 103 * ms}
 	partial := batchSpan{N: 1, Gather: 110 * ms, Pack: 115 * ms, Packed: 116 * ms, Infer: 117 * ms}
 	old := batchSpan{N: 2, Gather: 0, Pack: 1 * ms, Packed: 1 * ms, Infer: 2 * ms}
-	st := summarizeBatches([]batchSpan{old, full, full, partial}, 4, 5*time.Millisecond, 50*ms)
+	late := batchSpan{N: 3, Gather: 900 * ms, Pack: 901 * ms, Packed: 901 * ms, Infer: 902 * ms}
+	st := summarizeBatches([]batchSpan{old, full, full, partial, late}, 4, 5*time.Millisecond, 50*ms, 500*ms)
 	if st.Batches != 3 {
-		t.Fatalf("counted %d batches, want 3 inside the window", st.Batches)
+		t.Fatalf("counted %d batches, want the 3 inside the window", st.Batches)
 	}
 	if want := []int{1, 0, 0, 2}; !slices.Equal(st.Sizes, want) {
 		t.Errorf("sizes %v, want %v", st.Sizes, want)
@@ -222,7 +223,7 @@ func TestSummarizeBatches(t *testing.T) {
 	near(t, "lane wait p99", st.LaneWaitP99, 1, 1e-9)
 	near(t, "max wait", st.MaxWaitMs, 5, 1e-9)
 
-	if empty := summarizeBatches(nil, 4, time.Millisecond, 0); empty.Batches != 0 || empty.AvgSize != 0 {
+	if empty := summarizeBatches(nil, 4, time.Millisecond, 0, 1); empty.Batches != 0 || empty.AvgSize != 0 {
 		t.Errorf("no spans should give an empty summary, got %+v", empty)
 	}
 }

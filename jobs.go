@@ -86,9 +86,11 @@ func (j *job) view() jobView {
 
 type jobStore struct {
 	s    *server
+	mon  *sysMonitor
 	dir  string // where finished jobs and uploads are kept or empty for memory only
 	mu   sync.Mutex
 	jobs []*job
+	perf map[string]*runPerf
 }
 
 func newID() string {
@@ -169,6 +171,9 @@ func (st *jobStore) start(source, dir, tmpDir string, classes []string) (*job, e
 }
 
 func (st *jobStore) run(j *job) {
+	done := make(chan struct{})
+	go func() { st.savePerf(st.recordRun(j, done)) }()
+	defer close(done)
 	next := make(chan int)
 	var wg sync.WaitGroup
 	for w := 0; w < jobWorkers; w++ {
@@ -247,6 +252,7 @@ func (st *jobStore) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/jobs/{id}", st.handleGet)
 	mux.HandleFunc("POST /api/jobs/{id}/cancel", st.handleCancel)
 	mux.HandleFunc("GET /api/jobs/{id}/results", st.handleResults)
+	mux.HandleFunc("GET /api/jobs/{id}/perf", st.handlePerf)
 	mux.HandleFunc("GET /api/jobs/{id}/images/{n}", st.handleImage)
 }
 
