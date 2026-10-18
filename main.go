@@ -192,7 +192,6 @@ func main() {
 	}
 	jobs.routes(mux)
 	mux.HandleFunc("GET /api/system", startSysMonitor(engine, cpuPool).handleSystem)
-	mux.HandleFunc("GET /api/trace", engine.handleTrace)
 	mux.HandleFunc("POST /debug/cuda-profiler/{action}", handleCudaProfiler)
 	mux.HandleFunc("GET /api/logs", serverLogs.handleLogs)
 	mux.HandleFunc("GET /api/profiles", handleProfiles)

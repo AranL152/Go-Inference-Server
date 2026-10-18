@@ -1,11 +1,7 @@
-// Per-batch pipeline timings for the live timeline in the web UI
+// Per-batch pipeline timings
 package main
 
-import (
-	"net/http"
-	"strconv"
-	"sync"
-)
+import "sync"
 
 const traceHistory = 4096
 
@@ -68,21 +64,4 @@ func (t *batchTracer) since(seq int64) []batchSpan {
 		out = append(out, t.ring[i%int64(len(t.ring))])
 	}
 	return out
-}
-
-// handleTrace returns spans newer than the since query param and the engine
-// clock so the client can line its view up with the server
-func (e *Engine) handleTrace(w http.ResponseWriter, r *http.Request) {
-	since, err := strconv.ParseInt(r.URL.Query().Get("since"), 10, 64)
-	if err != nil {
-		since = -1
-	}
-	lanes := max(numInferLanes, 1)
-	writeJSON(w, http.StatusOK, map[string]any{
-		"now":       e.now(),
-		"lanes":     lanes,
-		"workers":   numUnpackers,
-		"max_batch": e.maxBatch,
-		"spans":     e.tracer.since(since),
-	})
 }
