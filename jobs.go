@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -251,9 +252,15 @@ func (st *jobStore) routes(mux *http.ServeMux) {
 
 func (st *jobStore) handleConfig(w http.ResponseWriter, r *http.Request) {
 	e := st.s.engine
+	decoders := 0
+	if st.s.cpuPool != nil {
+		decoders = st.s.cpuPool.size
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"model": st.s.modelName, "detector": e.Detector(), "labels": e.labels,
 		"max_batch": e.maxBatch, "conf": detConfThresh, "iou": detIoUThresh,
+		"max_wait_ms": float64(e.maxWait) / 1e6, "infer_lanes": max(numInferLanes, 1),
+		"unpack_workers": numUnpackers, "cpu_decoders": decoders, "cores": runtime.NumCPU(),
 	})
 }
 

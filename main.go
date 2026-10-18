@@ -192,6 +192,7 @@ func main() {
 	}
 	jobs.routes(mux)
 	mux.HandleFunc("GET /api/system", startSysMonitor(engine, cpuPool).handleSystem)
+	mux.HandleFunc("GET /api/batching", engine.handleBatching)
 	mux.HandleFunc("POST /api/profile/trace", handleTraceCapture)
 	mux.HandleFunc("GET /api/profile/trace", handleLatest("trace"))
 	mux.HandleFunc("POST /api/profile/cpu", handleCPUCapture)

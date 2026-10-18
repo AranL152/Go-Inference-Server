@@ -1,7 +1,13 @@
-// Per-batch pipeline timings
+// Per-batch pipeline timings and how well batches fill
 package main
 
-import "sync"
+import (
+	"math"
+	"net/http"
+	"slices"
+	"sync"
+	"time"
+)
 
 const traceHistory = 4096
 
@@ -64,4 +70,54 @@ func (t *batchTracer) since(seq int64) []batchSpan {
 		out = append(out, t.ring[i%int64(len(t.ring))])
 	}
 	return out
+}
+
+// batchingStats describes how well dynamic batching is filling batches
+type batchingStats struct {
+	MaxBatch    int     `json:"max_batch"`
+	MaxWaitMs   float64 `json:"max_wait_ms"`
+	Batches     int     `json:"batches"`
+	Sizes       []int   `json:"sizes"` // batches of each size, index 0 holds size 1
+	AvgSize     float64 `json:"avg_size"`
+	FullPct     float64 `json:"full_pct"`
+	FillP50Ms   float64 `json:"fill_p50_ms"` // first request in to batch closed
+	FillP99Ms   float64 `json:"fill_p99_ms"`
+	LaneWaitP50 float64 `json:"lane_wait_p50_ms"` // packed batch waiting for a free lane
+	LaneWaitP99 float64 `json:"lane_wait_p99_ms"`
+}
+
+// summarizeBatches describes the spans that reached a lane at or after from
+func summarizeBatches(spans []batchSpan, maxBatch int, maxWait time.Duration, from int64) batchingStats {
+	st := batchingStats{MaxBatch: maxBatch, MaxWaitMs: float64(maxWait) / 1e6, Sizes: make([]int, maxBatch)}
+	var fill, laneWait []float64
+	images := 0
+	for _, s := range spans {
+		if s.Infer < from || s.N < 1 || s.N > maxBatch {
+			continue
+		}
+		st.Batches++
+		st.Sizes[s.N-1]++
+		images += s.N
+		fill = append(fill, float64(s.Pack-s.Gather)/1e6)
+		laneWait = append(laneWait, float64(s.Infer-s.Packed)/1e6)
+	}
+	if st.Batches == 0 {
+		return st
+	}
+	st.AvgSize = float64(images) / float64(st.Batches)
+	st.FullPct = 100 * float64(st.Sizes[maxBatch-1]) / float64(st.Batches)
+	rank := func(v []float64, q float64) float64 {
+		slices.Sort(v)
+		return v[max(int(math.Ceil(q*float64(len(v))))-1, 0)]
+	}
+	st.FillP50Ms, st.FillP99Ms = rank(fill, 0.5), rank(fill, 0.99)
+	st.LaneWaitP50, st.LaneWaitP99 = rank(laneWait, 0.5), rank(laneWait, 0.99)
+	return st
+}
+
+const batchingWindow = 10 * time.Second
+
+func (e *Engine) handleBatching(w http.ResponseWriter, r *http.Request) {
+	from := e.now() - int64(batchingWindow)
+	writeJSON(w, http.StatusOK, summarizeBatches(e.tracer.since(-1), e.maxBatch, e.maxWait, from))
 }

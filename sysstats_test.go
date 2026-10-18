@@ -5,6 +5,7 @@ import (
 	"math"
 	"net/http/httptest"
 	"runtime"
+	"slices"
 	"testing"
 	"time"
 
@@ -199,5 +200,29 @@ func TestProcCPUMatchesKnownBurn(t *testing.T) {
 	host := pct(cpu1[0].busy-cpu0[0].busy, cpu1[0].total-cpu0[0].total)
 	if host < proc*0.6 {
 		t.Errorf("host CPU %.1f%% is below this process's %.1f%%", host, proc)
+	}
+}
+
+func TestSummarizeBatches(t *testing.T) {
+	ms := int64(time.Millisecond)
+	full := batchSpan{N: 4, Gather: 100 * ms, Pack: 102 * ms, Packed: 103 * ms, Infer: 103 * ms}
+	partial := batchSpan{N: 1, Gather: 110 * ms, Pack: 115 * ms, Packed: 116 * ms, Infer: 117 * ms}
+	old := batchSpan{N: 2, Gather: 0, Pack: 1 * ms, Packed: 1 * ms, Infer: 2 * ms}
+	st := summarizeBatches([]batchSpan{old, full, full, partial}, 4, 5*time.Millisecond, 50*ms)
+	if st.Batches != 3 {
+		t.Fatalf("counted %d batches, want 3 inside the window", st.Batches)
+	}
+	if want := []int{1, 0, 0, 2}; !slices.Equal(st.Sizes, want) {
+		t.Errorf("sizes %v, want %v", st.Sizes, want)
+	}
+	near(t, "avg size", st.AvgSize, 3, 1e-9)
+	near(t, "full pct", st.FullPct, 200.0/3, 1e-9)
+	near(t, "fill p50", st.FillP50Ms, 2, 1e-9)
+	near(t, "fill p99", st.FillP99Ms, 5, 1e-9)
+	near(t, "lane wait p99", st.LaneWaitP99, 1, 1e-9)
+	near(t, "max wait", st.MaxWaitMs, 5, 1e-9)
+
+	if empty := summarizeBatches(nil, 4, time.Millisecond, 0); empty.Batches != 0 || empty.AvgSize != 0 {
+		t.Errorf("no spans should give an empty summary, got %+v", empty)
 	}
 }
