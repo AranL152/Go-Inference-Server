@@ -31,8 +31,8 @@ const (
 	keepCaptures = 20
 )
 
-// captureMu allows one trace or CPU profile at a time, as the runtime does
-var captureMu sync.Mutex
+// the runtime allows one CPU profile and one trace at a time, which can overlap
+var cpuCaptureMu, traceCaptureMu sync.Mutex
 
 var captureName = regexp.MustCompile(`^(trace|cpu)-\d{8}-\d{6}\.(out|pb\.gz)$`)
 
@@ -281,10 +281,10 @@ var errCaptureBusy = errors.New("a capture is already running")
 // captureTrace records an execution trace of the running server for d and
 // returns its per stage summary
 func captureTrace(ctx context.Context, d time.Duration) (*traceSummary, error) {
-	if !captureMu.TryLock() {
+	if !traceCaptureMu.TryLock() {
 		return nil, errCaptureBusy
 	}
-	defer captureMu.Unlock()
+	defer traceCaptureMu.Unlock()
 	os.MkdirAll(profileDir, 0o755)
 	now := time.Now()
 	name := "trace-" + now.Format("20060102-150405") + ".out"
@@ -441,10 +441,10 @@ func analyzeCPUProfile(r io.Reader, wall time.Duration) (*cpuSummary, error) {
 // captureCPU records a CPU profile of the running server for d and returns
 // where the CPU went by stage and function
 func captureCPU(ctx context.Context, d time.Duration) (*cpuSummary, error) {
-	if !captureMu.TryLock() {
+	if !cpuCaptureMu.TryLock() {
 		return nil, errCaptureBusy
 	}
-	defer captureMu.Unlock()
+	defer cpuCaptureMu.Unlock()
 	os.MkdirAll(profileDir, 0o755)
 	now := time.Now()
 	name := "cpu-" + now.Format("20060102-150405") + ".pb.gz"

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 )
 
@@ -25,7 +26,7 @@ type runPerf struct {
 
 // run captures start this far in so they see steady state, not ramp up
 const (
-	runWarmup     = time.Second
+	runWarmup     = 500 * time.Millisecond
 	runCPUCapture = 2 * time.Second
 	runTraceSpan  = time.Second
 )
@@ -60,20 +61,25 @@ func (st *jobStore) recordRun(j *job, done <-chan struct{}) *runPerf {
 		}
 	}
 	if wait(runWarmup) {
-		cpu, err := captureCPU(ctx, runCPUCapture)
-		if err != nil {
-			log.Printf("job %s: CPU profile skipped: %v", j.ID, err)
-		}
-		p.CPU = cpu
-		select {
-		case <-done:
-		default:
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			cpu, err := captureCPU(ctx, runCPUCapture)
+			if err != nil {
+				log.Printf("job %s: CPU profile skipped: %v", j.ID, err)
+			}
+			p.CPU = cpu
+		}()
+		go func() {
+			defer wg.Done()
 			tr, err := captureTrace(ctx, runTraceSpan)
 			if err != nil {
 				log.Printf("job %s: trace skipped: %v", j.ID, err)
 			}
 			p.Trace = tr
-		}
+		}()
+		wg.Wait()
 	}
 	<-done
 	p.End = time.Now()

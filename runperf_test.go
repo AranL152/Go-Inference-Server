@@ -69,8 +69,8 @@ func TestJobRecordsItsRun(t *testing.T) {
 	if got := int(p.Batching.AvgSize*float64(p.Batching.Batches) + 0.5); got != images {
 		t.Errorf("batches cover %d images, the job had %d", got, images)
 	}
-	if run > runWarmup+runCPUCapture && p.CPU == nil {
-		t.Error("run outlasted the warm up but has no CPU profile")
+	if run > runWarmup+runCPUCapture && (p.CPU == nil || p.Trace == nil) {
+		t.Errorf("run outlasted the captures but has CPU %v trace %v", p.CPU != nil, p.Trace != nil)
 	}
 	if p.CPU != nil && (len(p.CPU.Stages) == 0 || p.CPU.Stages[0].Stage != stageDecode) {
 		t.Errorf("CPU profile stages %+v, want decode on top for a detection job", p.CPU.Stages)
