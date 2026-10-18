@@ -43,6 +43,7 @@ that number is measured rather than claimed.
 | `/` | web UI (detector models) |
 | `/api/jobs` | start, list, cancel and page through dataset detection jobs |
 | `/api/system` | GPU, CPU, memory and pipeline samples, last 120 seconds |
+| `/api/jobs/{id}/perf` | a job's recorded run: samples, batching, CPU profile and trace |
 
 ## Running it
 
@@ -83,15 +84,14 @@ boost-clock ramp and read low.
 ## Object detection demo
 
 The server also runs a detector. With a detector model, `/predict` returns
-boxes instead of a class, and the web UI at `/` has three tabs:
+boxes instead of a class, and the web UI at `/` has two pages:
 
-- **Detect**: point it at a folder of JPEGs on the server, or upload images
+- **Run detection**: point it at a folder of JPEGs on the server, or upload images
   or a whole folder, and list the classes to sort into (blank means all 80
   COCO classes). Each job shows a live progress bar.
 - **Results**: images grouped by detected class with per-category counts and
-  boxes drawn on each image.
-- **Performance**: a Task Manager style view of GPU utilization, VRAM, power,
-  clocks, every CPU core, memory, throughput, latency and batch size.
+  boxes drawn on each image. The **Performance** switch shows that job's
+  profile, covered under Profiling below.
 
 ```bash
 ./demo.sh                     # YOLOX-S on TensorRT FP16, UI at http://localhost:8080
@@ -123,6 +123,46 @@ against 40.4 for FP16 on the same images, and 1,234 against 1,228 images/s,
 because the GPU is not the bottleneck here.
 
 Rebuild the UI with `cd ui && pnpm install && pnpm run publish`.
+
+## Profiling
+
+Every detection job profiles itself. Open it in Results and switch to Performance:
+
+- **Bottleneck**: each stage's ceiling from its measured cost per image. The
+  lowest one is the limit.
+- **CPU profile**: a 2 s pprof capture taken half a second into the run, split
+  by pipeline stage using goroutine labels.
+- **Goroutine time**: a 1 s execution trace showing how long each stage spent
+  running, in C, waiting for a CPU, or blocked, and what it blocked on.
+- **Batching, Go runtime, Latency budget**: batch fill, allocation and GC per
+  request, and where a request's time goes.
+- **GPU timeline, GPU kernels**: the latest Nsight Systems and Nsight Compute
+  summaries for the model.
+
+Runs are saved to `jobs/<id>.perf.json`. Raw captures go to `profiles/`, and
+each panel shows the command to open its file:
+
+```bash
+go tool pprof -http=: profiles/cpu-<time>.pb.gz
+go tool trace profiles/trace-<time>.out
+```
+
+The GPU captures are separate because they run the server under the Nsight tools:
+
+```bash
+# Nsight Systems timeline under load, writes profiles/MODEL.nsys-rep and .nsys.json
+CONC=128 ./profile_gpu.sh yolox_s_u8.onnx -max-batch 16 -infer-lanes 3 -device-binding -trt trt_cache
+nsys-ui profiles/yolox_s_u8.nsys-rep
+
+# Nsight Compute counters for one batch, writes profiles/MODEL.ncu-rep and .json
+./profile_kernels.sh yolox_s_u8.onnx -trt trt_cache
+ncu-ui profiles/yolox_s_u8.ncu-rep
+```
+
+`profile_gpu.sh` needs an Nsight Systems that supports the installed driver.
+The one in CUDA 12.6 can't trace kernels on a CUDA 13 driver, so install a
+newer one (`sudo apt install nsight-systems-2026.1.3`). For traffic that isn't
+a job, `/debug/pprof/` works against the live server.
 
 ## How it works
 
