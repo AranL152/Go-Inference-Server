@@ -297,8 +297,8 @@
 			breakdown
 		)}
 
-		<!-- Nsight captures are made separately with profile_gpu.sh, so they are not part of a job run -->
-		{#if !runId}<GpuTimeline {model} />{/if}
+		<!-- Nsight captures come from profile_gpu.sh and profile_kernels.sh, not from the run -->
+		<GpuTimeline {model} />
 		{#snippet kp()}<KernelProfile {model} />{/snippet}
 		{@render card('GPU kernels', 'Nsight Compute hardware counters for one batch', kp)}
 

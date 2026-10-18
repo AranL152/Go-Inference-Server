@@ -18,7 +18,7 @@
 	const us = (v: number) => (v >= 1000 ? `${(v / 1000).toFixed(1)} ms` : `${v.toFixed(0)} µs`);
 </script>
 
-<Panel title="GPU timeline" sub="Nsight Systems trace of kernels and copies under steady load, captured with profile_gpu.sh">
+<Panel title="GPU timeline" sub="Nsight Systems trace of kernels and copies, a separate capture from profile_gpu.sh">
 	{#if !p}
 		<p class="text-sm text-[var(--text-muted)]">No Nsight Systems capture yet. Run</p>
 		<pre class="mt-2 overflow-x-auto rounded-lg bg-[var(--bg)] px-3 py-2 font-mono text-xs text-[var(--fg)]">./profile_gpu.sh {model || 'MODEL.onnx'} -device-binding -trt trt_cache</pre>
