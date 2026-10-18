@@ -194,6 +194,8 @@ func main() {
 	mux.HandleFunc("GET /api/system", startSysMonitor(engine, cpuPool).handleSystem)
 	mux.HandleFunc("POST /api/profile/trace", handleTraceCapture)
 	mux.HandleFunc("GET /api/profile/trace", handleLatest("trace"))
+	mux.HandleFunc("POST /api/profile/cpu", handleCPUCapture)
+	mux.HandleFunc("GET /api/profile/cpu", handleLatest("cpu"))
 	mux.HandleFunc("GET /api/profile/files/{name}", handleCaptureFile)
 	mux.HandleFunc("POST /debug/cuda-profiler/{action}", handleCudaProfiler)
 	mux.HandleFunc("GET /api/logs", serverLogs.handleLogs)

@@ -1,4 +1,4 @@
-// On demand execution trace captures of the live server, summarised per pipeline stage
+// On demand execution trace and CPU profile captures of the live server, summarised per pipeline stage
 package main
 
 import (
@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime/pprof"
 	"runtime/trace"
 	"slices"
 	"sort"
@@ -19,6 +20,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/pprof/profile"
 	xtrace "golang.org/x/exp/trace"
 )
 
@@ -336,4 +338,132 @@ func handleCaptureFile(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", name))
 	http.ServeFile(w, r, filepath.Join(profileDir, name))
+}
+
+type funcShare struct {
+	Func string  `json:"func"`
+	Pct  float64 `json:"pct"`
+}
+
+type stageCPU struct {
+	Stage string      `json:"stage"`
+	Pct   float64     `json:"pct"`   // share of all sampled CPU
+	Cores float64     `json:"cores"` // average cores busy in this stage
+	Top   []funcShare `json:"top"`   // hottest functions inside the stage
+}
+
+type cpuSummary struct {
+	File    string      `json:"file"`
+	Taken   time.Time   `json:"taken"`
+	Seconds float64     `json:"seconds"`
+	Cores   float64     `json:"cores"` // average cores busy across the process
+	Stages  []stageCPU  `json:"stages"`
+	Top     []funcShare `json:"top"`
+}
+
+// analyzeCPUProfile splits CPU samples by pipeline stage label and lists the
+// functions where the samples landed
+func analyzeCPUProfile(r io.Reader, wall time.Duration) (*cpuSummary, error) {
+	p, err := profile.Parse(r)
+	if err != nil {
+		return nil, err
+	}
+	vi := len(p.SampleType) - 1 // cpu nanoseconds
+	var total int64
+	byStage := map[string]int64{}
+	flat := map[string]int64{}
+	stageFlat := map[string]map[string]int64{}
+	for _, s := range p.Sample {
+		v := s.Value[vi]
+		total += v
+		stage := "other"
+		if l := s.Label["stage"]; len(l) > 0 {
+			stage = l[0]
+		}
+		byStage[stage] += v
+		fn := "unknown"
+		if len(s.Location) > 0 && len(s.Location[0].Line) > 0 {
+			fn = s.Location[0].Line[0].Function.Name
+		}
+		flat[fn] += v
+		if stageFlat[stage] == nil {
+			stageFlat[stage] = map[string]int64{}
+		}
+		stageFlat[stage][fn] += v
+	}
+	pct := func(v int64) float64 {
+		if total == 0 {
+			return 0
+		}
+		return 100 * float64(v) / float64(total)
+	}
+	top := func(m map[string]int64, n int) []funcShare {
+		var out []funcShare
+		for f, v := range m {
+			out = append(out, funcShare{Func: f, Pct: pct(v)})
+		}
+		sort.Slice(out, func(i, j int) bool { return out[i].Pct > out[j].Pct })
+		return out[:min(len(out), n)]
+	}
+	sum := &cpuSummary{Seconds: wall.Seconds(), Top: top(flat, 12)}
+	if wall > 0 {
+		sum.Cores = float64(total) / float64(wall)
+	}
+	for _, name := range append(slices.Clone(stageNames), "other") {
+		v, ok := byStage[name]
+		if !ok {
+			continue
+		}
+		sc := stageCPU{Stage: name, Pct: pct(v), Top: top(stageFlat[name], 3)}
+		if wall > 0 {
+			sc.Cores = float64(v) / float64(wall)
+		}
+		sum.Stages = append(sum.Stages, sc)
+	}
+	sort.Slice(sum.Stages, func(i, j int) bool { return sum.Stages[i].Pct > sum.Stages[j].Pct })
+	return sum, nil
+}
+
+// handleCPUCapture records a CPU profile of the running server and returns
+// where the CPU went by stage and function
+func handleCPUCapture(w http.ResponseWriter, r *http.Request) {
+	d := captureSeconds(r, 3, 30)
+	if !captureMu.TryLock() {
+		writeError(w, http.StatusConflict, "a capture is already running")
+		return
+	}
+	defer captureMu.Unlock()
+	os.MkdirAll(profileDir, 0o755)
+	now := time.Now()
+	name := "cpu-" + now.Format("20060102-150405") + ".pb.gz"
+	f, err := os.Create(filepath.Join(profileDir, name))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer f.Close()
+	if err := pprof.StartCPUProfile(f); err != nil {
+		writeError(w, http.StatusConflict, "could not start CPU profile: "+err.Error())
+		return
+	}
+	start := time.Now()
+	select {
+	case <-time.After(d):
+	case <-r.Context().Done():
+	}
+	pprof.StopCPUProfile()
+	wall := time.Since(start)
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	sum, err := analyzeCPUProfile(f, wall)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not read profile: "+err.Error())
+		return
+	}
+	sum.File, sum.Taken = name, now
+	saveSummary("cpu-latest.json", sum)
+	pruneCaptures("cpu")
+	writeJSON(w, http.StatusOK, sum)
 }

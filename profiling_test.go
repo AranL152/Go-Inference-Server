@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"runtime"
+	"runtime/pprof"
 	"runtime/trace"
 	"strings"
 	"sync"
@@ -98,4 +99,56 @@ func TestAnalyzeTraceCPUContention(t *testing.T) {
 		t.Errorf("no scheduler delay measured")
 	}
 	t.Logf("running %.0f%%, runnable %.0f%%, sched delay p50 %.0f µs p99 %.0f µs", d.Running, d.Runnable, d.SchedP50Us, d.SchedP99Us)
+}
+
+var sink int
+
+// burn keeps a CPU busy mostly in its own frame rather than in the clock
+func burn(d time.Duration) {
+	x := 0
+	for start := time.Now(); time.Since(start) < d; {
+		for i := range 1_000_000 {
+			x += i * i
+		}
+	}
+	sink = x
+}
+
+// A labelled busy goroutine should own the CPU samples and an idle one none
+func TestAnalyzeCPUProfileByStage(t *testing.T) {
+	var buf bytes.Buffer
+	if err := pprof.StartCPUProfile(&buf); err != nil {
+		t.Skipf("profiling unavailable: %v", err)
+	}
+	start := time.Now()
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		setStage(stageDecode)
+		burn(600 * time.Millisecond)
+	}()
+	go func() {
+		defer wg.Done()
+		setStage(stageInfer)
+		time.Sleep(600 * time.Millisecond)
+	}()
+	wg.Wait()
+	pprof.StopCPUProfile()
+	sum, err := analyzeCPUProfile(&buf, time.Since(start))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sum.Stages) == 0 || sum.Stages[0].Stage != stageDecode || sum.Stages[0].Pct < 80 {
+		t.Fatalf("stages %+v, want decode to hold most samples", sum.Stages)
+	}
+	near(t, "decode cores", sum.Stages[0].Cores, 1, 0.3)
+	if !strings.HasSuffix(sum.Top[0].Func, ".burn") {
+		t.Errorf("hottest function %q, want burn", sum.Top[0].Func)
+	}
+	for _, s := range sum.Stages {
+		if s.Stage == stageInfer && s.Pct > 5 {
+			t.Errorf("idle infer goroutine got %.0f%% of samples", s.Pct)
+		}
+	}
 }
