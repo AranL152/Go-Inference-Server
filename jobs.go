@@ -2,6 +2,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -23,6 +24,24 @@ import (
 )
 
 const jobWorkers = 256
+
+// jobReadBufs holds the JPEG bytes of the images job workers are processing
+var jobReadBufs = newFreeList(jobWorkers, func() *bytes.Buffer { return new(bytes.Buffer) })
+
+// readFileInto replaces buf's contents with the file at path
+func readFileInto(buf *bytes.Buffer, path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	buf.Reset()
+	if fi, err := f.Stat(); err == nil {
+		buf.Grow(int(fi.Size()) + bytes.MinRead)
+	}
+	_, err = buf.ReadFrom(f)
+	return err
+}
 
 type imageResult struct {
 	Path       string      `json:"path"`
@@ -209,11 +228,13 @@ func (st *jobStore) run(j *job) {
 func (st *jobStore) process(j *job, i int) {
 	rel, _ := filepath.Rel(j.root, j.files[i])
 	r := imageResult{Path: filepath.ToSlash(rel), Detections: []Detection{}}
-	data, err := os.ReadFile(j.files[i])
+	buf := jobReadBufs.get()
+	defer jobReadBufs.put(buf)
+	err := readFileInto(buf, j.files[i])
 	if err == nil {
 		var res detectResponse
 		t := time.Now()
-		res, err = st.s.detect(data)
+		res, err = st.s.detect(buf.Bytes())
 		recentLatency.add(time.Since(t))
 		r.Width, r.Height = res.Width, res.Height
 		for _, d := range res.Detections {

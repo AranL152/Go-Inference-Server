@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 )
@@ -71,6 +72,21 @@ func TestJobRecordsItsRun(t *testing.T) {
 	}
 	if run > runWarmup+runCPUCapture && (p.CPU == nil || p.Trace == nil) {
 		t.Errorf("run outlasted the captures but has CPU %v trace %v", p.CPU != nil, p.Trace != nil)
+	}
+	// steady state is the median second; the first one includes filling the free lists
+	var allocs []float64
+	for _, s := range p.Samples {
+		if s.ReqPerSec > 0 {
+			allocs = append(allocs, s.AllocBytesPerReq)
+		}
+	}
+	slices.Sort(allocs)
+	if len(allocs) > 0 {
+		med := allocs[len(allocs)/2]
+		t.Logf("median %.1f KB allocated per image", med/1024)
+		if med > 64<<10 {
+			t.Errorf("job allocates %.0f KB per image in steady state, want under 64 KB", med/1024)
+		}
 	}
 	if p.CPU != nil && (len(p.CPU.Stages) == 0 || p.CPU.Stages[0].Stage != stageDecode) {
 		t.Errorf("CPU profile stages %+v, want decode on top for a detection job", p.CPU.Stages)

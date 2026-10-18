@@ -4,7 +4,6 @@ package main
 import (
 	"image"
 	"sort"
-	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -29,7 +28,8 @@ type Detection struct {
 	Box        [4]float32 `json:"box"`
 }
 
-var letterboxPool = sync.Pool{New: func() any { return make([]byte, 3*letterboxSize*letterboxSize) }}
+// letterbox inputs wait in the batch queue, so a busy job holds one per worker
+var letterboxBufs = newFreeList(jobWorkers, func() []byte { return make([]byte, 3*letterboxSize*letterboxSize) })
 
 // chooseScaleLong picks the strongest DCT downscale that keeps the longer side at or above target
 func chooseScaleLong(w, h, target int) (num, den int) {
@@ -166,7 +166,7 @@ func (p *cpuDecoderPool) PreprocessLetterbox(jpeg []byte) ([]byte, Letterbox, er
 		return nil, Letterbox{}, err
 	}
 	t2 := time.Now()
-	out := letterboxPool.Get().([]byte)
+	out := letterboxBufs.get()
 	r := letterboxInto(img, out)
 	atomic.AddInt64(&p.statDecodeNs, int64(t2.Sub(t)))
 	atomic.AddInt64(&p.statNormNs, int64(time.Since(t2)))

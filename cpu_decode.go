@@ -193,7 +193,8 @@ func (d *jpegDecoder) decodeScaled(src *C.uchar, n C.ulong, num, den int) (*imag
 	}
 	need := int(sw) * int(sh) * 4
 	if cap(d.buf) < need {
-		d.buf = make([]byte, need)
+		// headroom so a slightly larger image does not reallocate again
+		d.buf = make([]byte, need, need*3/2)
 	} else {
 		d.buf = d.buf[:need]
 	}

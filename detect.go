@@ -34,7 +34,7 @@ func (s *server) detect(jpeg []byte) (detectResponse, error) {
 		pred, err = s.engine.Predict(f)
 		letterboxF32Pool.Put(f)
 	}
-	letterboxPool.Put(in)
+	letterboxBufs.put(in)
 	if err != nil {
 		return detectResponse{}, err
 	}
