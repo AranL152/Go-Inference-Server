@@ -28,3 +28,6 @@
 # Raw trace and CPU profile captures from the dashboard
 /profiles/trace-*
 /profiles/cpu-*
+
+# Python bytecode
+__pycache__/
