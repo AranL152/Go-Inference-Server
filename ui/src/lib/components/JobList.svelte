@@ -28,7 +28,7 @@
 
 	{#if jobs.length === 0}
 		<p class="py-8 text-center text-sm text-[var(--text-muted)]">
-			No jobs yet. Point it at a folder of images above.
+			No jobs yet. Point it at a folder of images on the left.
 		</p>
 	{:else}
 		<div class="space-y-3">
