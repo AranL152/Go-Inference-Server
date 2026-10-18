@@ -23,7 +23,7 @@
 	let error = $state('');
 
 	// the job run to show, picked in Results; empty shows the live server
-	let { runId = '' }: { runId?: string } = $props();
+	let { runId = '', throughput = 0 }: { runId?: string; throughput?: number } = $props();
 	let run = $state<RunPerf | null>(null);
 	let runError = $state('');
 	$effect(() => {
@@ -258,7 +258,7 @@
 
 	{#if view === 'analysis'}
 		{#key runId}
-			<Bottleneck {samples} {cfg} span={runId ? samples.length : 5} run={!!runId} />
+			<Bottleneck {samples} {cfg} {throughput} span={runId ? samples.length : 5} run={!!runId} />
 
 			<div class="grid items-start gap-4 lg:grid-cols-2">
 				<CpuProfile live={!runId} data={run?.cpu ?? null} />

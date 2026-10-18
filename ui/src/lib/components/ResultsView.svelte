@@ -132,7 +132,7 @@
 		</section>
 
 		{#if pane === 'performance'}
-			<PerformanceView runId={id} />
+			<PerformanceView runId={id} throughput={job?.images_per_sec ?? 0} />
 		{:else}
 		<div>
 			<div class="mb-2 text-xs font-semibold text-[var(--text-muted)]">Categories</div>

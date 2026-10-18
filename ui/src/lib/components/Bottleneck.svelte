@@ -7,8 +7,16 @@
 		samples,
 		cfg,
 		span = 5,
-		run = false
-	}: { samples: Sample[]; cfg: ServerConfig | null; span?: number; run?: boolean } = $props();
+		run = false,
+		throughput = 0
+	}: {
+		samples: Sample[];
+		cfg: ServerConfig | null;
+		span?: number;
+		run?: boolean;
+		// a finished job's own images per second, which per second medians undercount on short runs
+		throughput?: number;
+	} = $props();
 
 	const recent = $derived(samples.filter((x) => x.req_per_sec > 0).slice(-span));
 	const mean = (f: (x: Sample) => number) => median(recent, f);
@@ -17,7 +25,7 @@
 
 	const rows = $derived.by(() => {
 		if (!cfg || !recent.length) return [];
-		const rps = mean((x) => x.req_per_sec);
+		const rps = throughput || mean((x) => x.req_per_sec);
 		const out: { name: string; how: string; cap: number }[] = [];
 		const decodeMs = mean((x) => x.decode_ms + x.letterbox_ms);
 		const decoders = Math.min(cfg.cpu_decoders, cfg.cores);
@@ -47,7 +55,7 @@
 		}
 		return out.sort((a, b) => a.cap - b.cap);
 	});
-	const rps = $derived(mean((x) => x.req_per_sec));
+	const rps = $derived(throughput || mean((x) => x.req_per_sec));
 	// scale to the two tightest stages so a far larger ceiling does not flatten them
 	const scale = $derived(Math.max(rps, rows[1]?.cap ?? rows[0]?.cap ?? 0) * 1.15 || 1);
 	const n = (v: number) => Math.round(v).toLocaleString();
