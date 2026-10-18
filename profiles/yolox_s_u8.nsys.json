@@ -1,0 +1,88 @@
+{
+ "model": "yolox_s_u8.onnx",
+ "seconds": 3.14,
+ "gpu_busy_pct": 32.5,
+ "compute_pct": 23.3,
+ "copy_pct": 9.3,
+ "copy_hidden_pct": 0.0,
+ "idle_gaps": 59778,
+ "idle_gap_p50_us": 1.4,
+ "idle_gap_p99_us": 69.9,
+ "kernels_per_s": 18775.0,
+ "kernel_avg_us": 12.4,
+ "short_kernel_pct": 56.1,
+ "launch_avg_us": 7.4,
+ "threads_blocked_on_gpu": 0.1,
+ "h2d": {
+  "count": 421,
+  "mb": 1544.6,
+  "avg_kb": 3668.9,
+  "gb_per_s": 18.78,
+  "pinned_pct": 0.0
+ },
+ "d2h": {
+  "count": 420,
+  "mb": 3581.4,
+  "avg_kb": 8527.2,
+  "gb_per_s": 17.11,
+  "pinned_pct": 0.0
+ },
+ "top_kernels": [
+  {
+   "name": "sm80_xmma_fprop_implicit_gemm_f16f16_f16f16_f16_nhwckrsc_nhwc_tilesize12",
+   "calls": 16840,
+   "total_ms": 285.59,
+   "avg_us": 17.0,
+   "share_pct": 39.1
+  },
+  {
+   "name": "sm80_xmma_fprop_implicit_gemm_f16f16_f16f16_f16_nhwckrsc_nhwc_tilesize25",
+   "calls": 5473,
+   "total_ms": 138.4,
+   "avg_us": 25.3,
+   "share_pct": 18.9
+  },
+  {
+   "name": "sm75_xmma_fprop_implicit_gemm_f16f16_f16f16_f16_nhwckrsc_nhwc_tilesize12",
+   "calls": 4210,
+   "total_ms": 88.72,
+   "avg_us": 21.1,
+   "share_pct": 12.1
+  },
+  {
+   "name": "permutationKernelPLC3",
+   "calls": 5052,
+   "total_ms": 55.06,
+   "avg_us": 10.9,
+   "share_pct": 7.5
+  },
+  {
+   "name": "copyPackedKernel",
+   "calls": 7999,
+   "total_ms": 54.76,
+   "avg_us": 6.8,
+   "share_pct": 7.5
+  },
+  {
+   "name": "generatedNativePointwise",
+   "calls": 12630,
+   "total_ms": 49.9,
+   "avg_us": 4.0,
+   "share_pct": 6.8
+  },
+  {
+   "name": "sm80_xmma_fprop_implicit_gemm_f16f16_f16f16_f16_nhwckrsc_nhwc_tilesize64",
+   "calls": 1684,
+   "total_ms": 24.9,
+   "avg_us": 14.8,
+   "share_pct": 3.4
+  },
+  {
+   "name": "sm50_xmma_pooling_coalescedC_NHWC_kMAX_3_False_execute_kernel_trt",
+   "calls": 1263,
+   "total_ms": 15.58,
+   "avg_us": 12.3,
+   "share_pct": 2.1
+  }
+ ]
+}
