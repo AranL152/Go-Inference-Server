@@ -3,6 +3,7 @@ package main
 
 import (
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"runtime"
@@ -97,7 +98,9 @@ func (l *latencyWindow) drain() (p50, p99 float64) {
 		return 0, 0
 	}
 	slices.Sort(v)
-	return v[len(v)/2], v[min(len(v)*99/100, len(v)-1)]
+	// nearest rank: the smallest value with at least p of the samples at or below it
+	rank := func(p float64) float64 { return v[max(int(math.Ceil(p*float64(len(v))))-1, 0)] }
+	return rank(0.50), rank(0.99)
 }
 
 type sysMonitor struct {
@@ -115,21 +118,24 @@ func startSysMonitor(e *Engine, pool *cpuDecoderPool) *sysMonitor {
 
 type cpuTimes struct{ busy, total float64 }
 
-func readCPUTimes() []cpuTimes {
-	b, err := os.ReadFile("/proc/stat")
-	if err != nil {
-		return nil
-	}
+// parseCPUTimes reads the aggregate and per core lines of /proc/stat. The
+// columns are user nice system idle iowait irq softirq steal guest guest_nice;
+// guest time is already counted inside user and nice so only the first eight
+// go into the total, and idle plus iowait are the time not busy.
+func parseCPUTimes(stat string) []cpuTimes {
 	var out []cpuTimes
-	for _, line := range strings.Split(string(b), "\n") {
+	for _, line := range strings.Split(stat, "\n") {
 		if !strings.HasPrefix(line, "cpu") {
 			break
 		}
 		var t cpuTimes
 		for i, f := range strings.Fields(line)[1:] {
+			if i >= 8 {
+				break
+			}
 			v, _ := strconv.ParseFloat(f, 64)
 			t.total += v
-			if i != 3 && i != 4 { // idle and iowait
+			if i != 3 && i != 4 {
 				t.busy += v
 			}
 		}
@@ -138,13 +144,19 @@ func readCPUTimes() []cpuTimes {
 	return out
 }
 
-func readMemMB() (used, total float64) {
-	b, err := os.ReadFile("/proc/meminfo")
+func readCPUTimes() []cpuTimes {
+	b, err := os.ReadFile("/proc/stat")
 	if err != nil {
-		return
+		return nil
 	}
+	return parseCPUTimes(string(b))
+}
+
+// parseMemInfo returns used and total host memory in MB from /proc/meminfo,
+// counting as used whatever the kernel says is not available
+func parseMemInfo(meminfo string) (used, total float64) {
 	var avail float64
-	for _, line := range strings.Split(string(b), "\n") {
+	for _, line := range strings.Split(meminfo, "\n") {
 		f := strings.Fields(line)
 		if len(f) < 2 {
 			continue
@@ -160,22 +172,41 @@ func readMemMB() (used, total float64) {
 	return total - avail, total
 }
 
-// readProc returns this process CPU ticks and resident memory in MB
-func readProc() (ticks, rssMB float64) {
-	if b, err := os.ReadFile("/proc/self/stat"); err == nil {
-		s := string(b)
-		f := strings.Fields(s[strings.LastIndexByte(s, ')')+2:])
-		u, _ := strconv.ParseFloat(f[11], 64)
-		k, _ := strconv.ParseFloat(f[12], 64)
-		ticks = u + k
+func readMemMB() (used, total float64) {
+	b, err := os.ReadFile("/proc/meminfo")
+	if err != nil {
+		return
 	}
-	if b, err := os.ReadFile("/proc/self/statm"); err == nil {
-		f := strings.Fields(string(b))
+	return parseMemInfo(string(b))
+}
+
+// parseProcStat returns user plus system CPU ticks from /proc/self/stat and
+// resident memory in MB from /proc/self/statm. The process name in stat can
+// hold spaces and parens, so fields are counted from the last closing paren.
+func parseProcStat(stat, statm string, pageSize int) (ticks, rssMB float64) {
+	if i := strings.LastIndexByte(stat, ')'); i >= 0 && i+2 <= len(stat) {
+		f := strings.Fields(stat[i+2:])
+		if len(f) > 12 {
+			u, _ := strconv.ParseFloat(f[11], 64) // utime, field 14
+			k, _ := strconv.ParseFloat(f[12], 64) // stime, field 15
+			ticks = u + k
+		}
+	}
+	if f := strings.Fields(statm); len(f) > 1 {
 		pages, _ := strconv.ParseFloat(f[1], 64)
-		rssMB = pages * float64(os.Getpagesize()) / (1 << 20)
+		rssMB = pages * float64(pageSize) / (1 << 20)
 	}
 	return
 }
+
+func readProc() (ticks, rssMB float64) {
+	stat, _ := os.ReadFile("/proc/self/stat")
+	statm, _ := os.ReadFile("/proc/self/statm")
+	return parseProcStat(string(stat), string(statm), os.Getpagesize())
+}
+
+// clockTicks is USER_HZ, the unit of /proc CPU times, which Linux fixes at 100
+const clockTicks = 100
 
 func pct(a, b float64) float64 {
 	if b <= 0 {
@@ -184,67 +215,109 @@ func pct(a, b float64) float64 {
 	return 100 * a / b
 }
 
+// pipelineCounters is one snapshot of the engine and decoder running totals
+type pipelineCounters struct {
+	batches, reqs, waitNs, runNs, busyNs, idleNs int64
+	h2dNs, computeNs, d2hNs, postNs              int64
+	decodeNs, letterboxNs, decoded               int64
+}
+
+func (m *sysMonitor) counters() pipelineCounters {
+	var c pipelineCounters
+	c.batches, c.reqs, _, c.waitNs, c.runNs, _, c.busyNs, c.idleNs = m.engine.CumulativeStats()
+	c.h2dNs, c.computeNs, c.d2hNs, c.postNs = m.engine.StageNs()
+	if m.pool != nil {
+		c.decodeNs = atomic.LoadInt64(&m.pool.statDecodeNs)
+		c.letterboxNs = atomic.LoadInt64(&m.pool.statNormNs)
+		c.decoded = atomic.LoadInt64(&m.pool.statCount)
+	}
+	return c
+}
+
+// fillPipeline sets the pipeline fields of s from two snapshots dt seconds
+// apart. Throughput and queue wait are per request, batch size and the GPU
+// stages are per batch, decode and letterbox are per image, and lane busy is
+// the share of lane time spent on a batch rather than waiting for one.
+func fillPipeline(s *sysSample, prev, cur pipelineCounters, dt float64) {
+	d := func(a, b int64) float64 { return float64(max(b-a, 0)) }
+	batches, reqs := d(prev.batches, cur.batches), d(prev.reqs, cur.reqs)
+	if dt > 0 {
+		s.ReqPerSec = reqs / dt
+	}
+	if batches > 0 {
+		s.AvgBatch = reqs / batches
+		s.RunMs = d(prev.runNs, cur.runNs) / batches / 1e6
+		s.H2DMs = d(prev.h2dNs, cur.h2dNs) / batches / 1e6
+		s.ComputeMs = d(prev.computeNs, cur.computeNs) / batches / 1e6
+		s.D2HMs = d(prev.d2hNs, cur.d2hNs) / batches / 1e6
+		s.PostMs = d(prev.postNs, cur.postNs) / batches / 1e6
+	}
+	if reqs > 0 {
+		s.QueueMs = d(prev.waitNs, cur.waitNs) / reqs / 1e6
+	}
+	busy := d(prev.busyNs, cur.busyNs)
+	s.LaneBusy = pct(busy, busy+d(prev.idleNs, cur.idleNs))
+	if n := d(prev.decoded, cur.decoded); n > 0 {
+		s.DecodeMs = d(prev.decodeNs, cur.decodeNs) / n / 1e6
+		s.LetterboxMs = d(prev.letterboxNs, cur.letterboxNs) / n / 1e6
+	}
+}
+
+// sampler turns running totals into one sample per interval
+type sampler struct {
+	m         *sysMonitor
+	gpu       *nvmlGPU
+	prevCPU   []cpuTimes
+	prevTicks float64
+	prev      pipelineCounters
+	prevT     time.Time
+}
+
+func newSampler(m *sysMonitor, gpu *nvmlGPU) *sampler {
+	sp := &sampler{m: m, gpu: gpu, prevCPU: readCPUTimes(), prev: m.counters(), prevT: time.Now()}
+	sp.prevTicks, _ = readProc()
+	return sp
+}
+
+func (sp *sampler) step(now time.Time) sysSample {
+	dt := now.Sub(sp.prevT).Seconds()
+	s := sysSample{T: now.UnixMilli(), Goroutines: runtime.NumGoroutine()}
+
+	cpu := readCPUTimes()
+	if len(cpu) == len(sp.prevCPU) && len(cpu) > 0 {
+		d := func(i int) float64 { return pct(cpu[i].busy-sp.prevCPU[i].busy, cpu[i].total-sp.prevCPU[i].total) }
+		s.CPU = d(0)
+		for i := 1; i < len(cpu); i++ {
+			s.Cores = append(s.Cores, d(i))
+		}
+	}
+	sp.prevCPU = cpu
+	s.MemUsedMB, s.MemTotalMB = readMemMB()
+	ticks, rss := readProc()
+	s.ProcCPU = pct((ticks-sp.prevTicks)/clockTicks, dt*float64(runtime.NumCPU()))
+	s.ProcRSSMB = rss
+	sp.prevTicks = ticks
+
+	cur := sp.m.counters()
+	fillPipeline(&s, sp.prev, cur, dt)
+	sp.prev = cur
+	s.P50Ms, s.P99Ms = recentLatency.drain()
+	sp.prevT = now
+
+	if sp.gpu != nil {
+		s.GPU = sp.gpu.sample()
+	}
+	return s
+}
+
 func (m *sysMonitor) sample() {
 	gpu, err := openGPU()
 	if err != nil {
 		log.Printf("GPU stats unavailable: %v", err)
 	}
-	prevCPU := readCPUTimes()
-	prevTicks, _ := readProc()
-	pb, pr, _, pw, pn, _, pbusy, pidle := m.engine.CumulativeStats()
-	ph, pc, pd, pp := m.engine.StageNs()
-	pdec, pnorm, pcnt := m.decodeNs()
-	prevT := time.Now()
-	for range time.Tick(sampleEvery) {
-		now := time.Now()
-		dt := now.Sub(prevT).Seconds()
-		s := sysSample{T: now.UnixMilli(), Goroutines: runtime.NumGoroutine()}
-
-		cpu := readCPUTimes()
-		if len(cpu) == len(prevCPU) && len(cpu) > 0 {
-			d := func(i int) float64 { return pct(cpu[i].busy-prevCPU[i].busy, cpu[i].total-prevCPU[i].total) }
-			s.CPU = d(0)
-			for i := 1; i < len(cpu); i++ {
-				s.Cores = append(s.Cores, d(i))
-			}
-		}
-		prevCPU = cpu
-		s.MemUsedMB, s.MemTotalMB = readMemMB()
-		ticks, rss := readProc()
-		s.ProcCPU = pct((ticks-prevTicks)/100, dt*float64(runtime.NumCPU()))
-		s.ProcRSSMB = rss
-		prevTicks = ticks
-
-		b, r, _, w, n, _, busy, idle := m.engine.CumulativeStats()
-		db, dr := max(b-pb, 0), max(r-pr, 0)
-		s.ReqPerSec = float64(dr) / dt
-		if db > 0 {
-			s.AvgBatch = float64(dr) / float64(db)
-			s.RunMs = float64(max(n-pn, 0)) / float64(db) / 1e6
-		}
-		if dr > 0 {
-			s.QueueMs = float64(max(w-pw, 0)) / float64(dr) / 1e6
-		}
-		s.LaneBusy = pct(float64(max(busy-pbusy, 0)), float64(max(busy-pbusy, 0)+max(idle-pidle, 0)))
-		h, c, d2h, post := m.engine.StageNs()
-		if db > 0 {
-			per := func(cur, prev int64) float64 { return float64(max(cur-prev, 0)) / float64(db) / 1e6 }
-			s.H2DMs, s.ComputeMs, s.D2HMs, s.PostMs = per(h, ph), per(c, pc), per(d2h, pd), per(post, pp)
-		}
-		ph, pc, pd, pp = h, c, d2h, post
-		dec, norm, cnt := m.decodeNs()
-		if dn := cnt - pcnt; dn > 0 {
-			s.DecodeMs = float64(max(dec-pdec, 0)) / float64(dn) / 1e6
-			s.LetterboxMs = float64(max(norm-pnorm, 0)) / float64(dn) / 1e6
-		}
-		pdec, pnorm, pcnt = dec, norm, cnt
-		pb, pr, pw, pn, pbusy, pidle = b, r, w, n, busy, idle
-		s.P50Ms, s.P99Ms = recentLatency.drain()
-		prevT = now
-
-		if gpu != nil {
-			s.GPU = gpu.sample()
-		}
+	sp := newSampler(m, gpu)
+	for now := range time.Tick(sampleEvery) {
+		s := sp.step(now)
 		m.mu.Lock()
 		m.ring = append(m.ring, s)
 		if len(m.ring) > sampleHistory {
@@ -252,13 +325,6 @@ func (m *sysMonitor) sample() {
 		}
 		m.mu.Unlock()
 	}
-}
-
-func (m *sysMonitor) decodeNs() (decode, norm, count int64) {
-	if m.pool == nil {
-		return
-	}
-	return atomic.LoadInt64(&m.pool.statDecodeNs), atomic.LoadInt64(&m.pool.statNormNs), atomic.LoadInt64(&m.pool.statCount)
 }
 
 // handleSystem returns samples newer than the since query param in unix ms

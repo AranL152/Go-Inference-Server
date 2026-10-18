@@ -47,14 +47,17 @@ var throttleNames = []struct {
 	{nvml.ClocksEventReasonDisplayClockSetting, "display clock"},
 }
 
-// violationPct is the share of the last interval spent held back by a policy
+// violationPct is the share of the last interval spent held back by a policy.
+// NVML gives the reference clock in microseconds but the violation time in
+// nanoseconds, so the reference delta is scaled up before dividing.
 func violationPct(prev *nvml.ViolationTime, cur nvml.ViolationTime) float64 {
-	dRef, dV := cur.ReferenceTime-prev.ReferenceTime, cur.ViolationTime-prev.ViolationTime
+	p := *prev
 	*prev = cur
-	if dRef == 0 || cur.ViolationTime < dV {
+	if cur.ReferenceTime <= p.ReferenceTime || cur.ViolationTime < p.ViolationTime {
 		return 0
 	}
-	return min(100, 100*float64(dV)/float64(dRef))
+	refNs := float64(cur.ReferenceTime-p.ReferenceTime) * 1000
+	return min(100, 100*float64(cur.ViolationTime-p.ViolationTime)/refNs)
 }
 
 func (g *nvmlGPU) sample() *gpuSample {
