@@ -23,3 +23,7 @@
 
 # Nsight Compute reports (open with ncu-ui) are large so only the JSON summaries are kept
 /profiles/*.ncu-rep
+
+# Raw trace and CPU profile captures from the dashboard
+/profiles/trace-*
+/profiles/cpu-*
