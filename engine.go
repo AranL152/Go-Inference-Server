@@ -159,7 +159,7 @@ type packedBatch struct {
 	// (-device-binding, full batches only); slot/inT/raw are nil then.
 	dslot *deviceSlot
 	inT   ort.Value
-	raw   []byte          // full-capacity staging buffer backing inT; returned to batchBufPool
+	raw   []byte          // full-capacity staging buffer backing inT; returned to batchBufs
 	batch []*batchRequest // ordered; row i of the output belongs to batch[i]
 	span  *batchSpan      // stage timings, filled in as the batch moves along
 }
@@ -171,7 +171,7 @@ type inferredBatch struct {
 	batch []*batchRequest
 	// logits is set instead of outT on the -device-binding path: the lane
 	// already copied the [n*numClass] logits to this pooled host slice (and
-	// recycled its device slot); unpack returns it to logitsPool.
+	// recycled its device slot); unpack returns it to outBufs.
 	logits []float32
 	span   *batchSpan
 }
@@ -214,21 +214,21 @@ type Engine struct {
 
 	// Device-resident slot pool (-device-binding). nil when
 	// disabled. Slots circulate gather -> infer -> back (the lane copies
-	// logits out before recycling); logitsPool recycles those host copies.
+	// logits out before recycling); outBufs recycles those host copies.
 	devSlotPool chan *deviceSlot
 	devSlots    []*deviceSlot
-	logitsPool  sync.Pool
+	outBufs     *freeList[[]float32] // host output buffers, maxBatch rows each
 
 	// Batching policy (configurable so it can be tuned later).
 	maxBatch int
 	maxWait  time.Duration
 
-	// batchBufPool recycles the batch staging buffer; at ~14MB per batch it was
-	// ~30% of all allocation. Buffers are always maxBatch*inputElems long;
+	// batchBufs recycles the batch staging buffer, 14 to 20 MB per batch.
+	// Buffers are always maxBatch*inputElems long;
 	// packAndSend slices to the realized batch size (NewTensor requires exact
 	// length). Returned in inferLoop right after inT.Destroy() — ORT pins the Go
 	// slice only while the OrtValue lives.
-	batchBufPool sync.Pool
+	batchBufs *freeList[[]byte]
 
 	submitCh chan *batchRequest  // handlers -> gatherer
 	inferCh  chan *packedBatch   // gatherer -> infer lane
@@ -419,7 +419,10 @@ func NewEngine(modelPath, libPath string, labels []string, maxBatch int, maxWait
 			return nil, fmt.Errorf("uint8 models need -device-binding or the plain path not -io-binding")
 		}
 	}
-	e.batchBufPool.New = func() any { return make([]byte, maxBatch*e.inBytes) }
+	// a batch can be packing, queued for a lane, on a lane, queued for unpack or unpacking
+	inFlight := 1 + inferChDepth + max(numInferLanes, 1) + unpackChDepth + numUnpackers
+	e.batchBufs = newFreeList(inFlight, func() []byte { return make([]byte, maxBatch*e.inBytes) })
+	e.outBufs = newFreeList(inFlight, func() []float32 { return make([]float32, maxBatch*e.outElems) })
 
 	// CUDA execution provider — the line that puts work on the RTX 4080.
 	e.options, err = ort.NewSessionOptions()
@@ -469,7 +472,6 @@ func NewEngine(modelPath, libPath string, labels []string, maxBatch int, maxWait
 	// once; the engine does its own pinned-host H2D/D2H, ORT computes against
 	// fixed device addresses. Wins over -io-binding when both are set.
 	if useDeviceBinding {
-		e.logitsPool.New = func() any { return make([]float32, maxBatch*e.outElems) }
 		e.devSlotPool = make(chan *deviceSlot, numBindingSlots)
 		for i := 0; i < numBindingSlots; i++ {
 			slot, err := e.newDeviceSlot()
@@ -837,7 +839,7 @@ func (e *Engine) packAndSend(batch []*batchRequest, span *batchSpan) {
 		e.inferCh <- &packedBatch{slot: slot, batch: batch, span: span}
 		return
 	}
-	raw := e.batchBufPool.Get().([]byte)
+	raw := e.batchBufs.get()
 	data := raw[:n*e.inBytes] // NewTensor requires the exact batch length
 	for i, r := range batch {
 		copy(data[i*e.inBytes:(i+1)*e.inBytes], r.input)
@@ -851,7 +853,7 @@ func (e *Engine) packAndSend(batch []*batchRequest, span *batchSpan) {
 		inT, err = ort.NewTensor(e.inShape(n), unsafe.Slice((*float32)(unsafe.Pointer(&data[0])), n*e.inElems))
 	}
 	if err != nil {
-		e.batchBufPool.Put(raw)
+		e.batchBufs.put(raw)
 		failBatch(batch, fmt.Errorf("create input tensor: %w", err))
 		return
 	}
@@ -921,11 +923,11 @@ func (e *Engine) inferLoop(lane int) {
 			span.Split, span.H2DEnd, span.ComputeEnd = true, e.at(computeT), e.at(d2hT)
 			var logits []float32
 			if runErr == nil {
-				logits = e.logitsPool.Get().([]float32)
+				logits = e.outBufs.get()
 				runErr = cudaMemcpyD2H(unsafe.Pointer(&logits[0]), s.devOut,
 					n*e.outElems*4)
 				if runErr != nil {
-					e.logitsPool.Put(logits)
+					e.outBufs.put(logits)
 				}
 			}
 			endT := time.Now()
@@ -1005,32 +1007,31 @@ func (e *Engine) inferLoop(lane int) {
 			continue
 		}
 
-		// nil output -> ORT allocates the correctly-shaped [N,1000] output.
-		outputs := []ort.Value{nil}
+		// run into a recycled host buffer rather than letting ORT allocate the
+		// output, which the Go binding would then copy into a fresh slice
+		outBuf := e.outBufs.get()
+		outT, runErr := ort.NewTensor(e.outShape(n), outBuf[:n*e.outElems])
 		runT := time.Now()
-		runErr := e.session.Run([]ort.Value{pb.inT}, outputs)
+		if runErr == nil {
+			runErr = e.session.Run([]ort.Value{pb.inT}, []ort.Value{outT})
+		}
 		endT := time.Now()
 		atomic.AddInt64(&e.statRunNs, int64(endT.Sub(runT)))
 		atomic.AddInt64(&e.statComputeNs, int64(endT.Sub(runT)))
 		span.H2DEnd, span.ComputeEnd, span.RunEnd = e.at(runT), e.at(endT), e.at(endT)
 		pb.inT.Destroy()
-		e.batchBufPool.Put(pb.raw) // safe once the OrtValue no longer pins it
+		e.batchBufs.put(pb.raw) // safe once the OrtValue no longer pins it
 		if runErr != nil {
+			if outT != nil {
+				outT.Destroy()
+			}
+			e.outBufs.put(outBuf)
 			failBatch(pb.batch, fmt.Errorf("inference run: %w", runErr))
 			atomic.AddInt64(&e.statBusyNs, int64(time.Since(busyStart)))
 			continue
 		}
-		outT, ok := outputs[0].(*ort.Tensor[float32])
-		if !ok {
-			if outputs[0] != nil {
-				outputs[0].Destroy()
-			}
-			failBatch(pb.batch, fmt.Errorf("unexpected output tensor type %T", outputs[0]))
-			atomic.AddInt64(&e.statBusyNs, int64(time.Since(busyStart)))
-			continue
-		}
 
-		e.unpackCh <- &inferredBatch{outT: outT, batch: pb.batch, span: span}
+		e.unpackCh <- &inferredBatch{outT: outT, logits: outBuf, batch: pb.batch, span: span}
 		atomic.AddInt64(&e.statRunBatchNs, int64(time.Since(busyStart)))
 		atomic.AddInt64(&e.statBusyNs, int64(time.Since(busyStart)))
 	}
@@ -1050,8 +1051,7 @@ func (e *Engine) unpackLoop(worker int) {
 		r = region(stageUnpack)
 		var logits []float32
 		if ib.logits != nil {
-			// -device-binding: lane-copied host logits; pooled slice is
-			// [maxBatch*numClass], slice to the (always-full) batch.
+			// recycled [maxBatch*outElems] host buffer, filled for this batch's rows
 			logits = ib.logits[:len(ib.batch)*e.outElems]
 		} else {
 			logits = ib.outT.GetData() // length n*numClass, row-major [N,1000]
@@ -1066,10 +1066,11 @@ func (e *Engine) unpackLoop(worker int) {
 		}
 		postEnd := time.Now()
 		atomic.AddInt64(&e.statPostNs, int64(postEnd.Sub(postT)))
-		if ib.logits != nil {
-			e.logitsPool.Put(ib.logits)
-		} else {
+		if ib.outT != nil {
 			ib.outT.Destroy()
+		}
+		if ib.logits != nil {
+			e.outBufs.put(ib.logits)
 		}
 		if err != nil {
 			failBatch(ib.batch, err)

@@ -242,3 +242,23 @@ func TestGPUBusyUnderLoad(t *testing.T) {
 	}
 	t.Logf("%s busy %.0f%%, %.0f MB used, %.0f W, PCIe in %.0f MB/s", s.Name, s.Util, s.MemUsedMB, s.PowerW, s.PCIeRxMBs)
 }
+
+// Batch staging and output buffers are recycled, so steady traffic should
+// allocate kilobytes per request, not the megabytes a fresh batch buffer costs
+func TestEngineAllocationPerRequest(t *testing.T) {
+	e := newTestEngine(t, 8, 3*time.Millisecond)
+	defer e.Close()
+	dog := loadAndPreprocess(t, "testdata/dog.jpg")
+	runRequests(t, e, dog, 640, 32) // fill the free lists
+
+	const n = 640
+	before := readRuntime()
+	runRequests(t, e, dog, n, 32)
+	after := readRuntime()
+	var s sysSample
+	fillRuntime(&s, before, after, n, 1)
+	t.Logf("%.1f KB and %.0f objects per request", s.AllocBytesPerReq/1024, s.AllocsPerReq)
+	if s.AllocBytesPerReq > 64<<10 {
+		t.Errorf("%.0f KB allocated per request, want under 64 KB", s.AllocBytesPerReq/1024)
+	}
+}
