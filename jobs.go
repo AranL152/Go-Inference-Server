@@ -471,9 +471,13 @@ func (st *jobStore) handleResults(w http.ResponseWriter, r *http.Request) {
 		if res.Path == "" {
 			continue
 		}
+		// "" is every image, _none those with no wanted object and _some those with at least one
 		ok := class == ""
-		if class == "_none" {
+		switch class {
+		case "_none":
 			ok = len(res.Detections) == 0
+		case "_some":
+			ok = len(res.Detections) > 0
 		}
 		for _, d := range res.Detections {
 			if d.ClassName == class {

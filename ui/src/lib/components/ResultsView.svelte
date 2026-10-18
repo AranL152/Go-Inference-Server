@@ -24,6 +24,10 @@
 	let categories = $state<Category[]>([]);
 	let noObjects = $state(0);
 	let cls = $state('');
+	// a job run for chosen classes opens on the images that matched, once per job
+	let defaultedFor = '';
+	// _some and _none are filters, not classes, so they highlight no particular box
+	const highlight = $derived(cls.startsWith('_') ? '' : cls);
 	let items = $state<ResultItem[]>([]);
 	let total = $state(0);
 	let loading = $state(false);
@@ -34,6 +38,10 @@
 		job = r.job;
 		categories = r.categories;
 		noObjects = r.no_objects;
+		if (defaultedFor !== id) {
+			defaultedFor = id;
+			if (r.job.classes.length && cls === '') cls = '_some';
+		}
 	}
 
 	async function loadPage(reset: boolean) {
@@ -67,7 +75,7 @@
 
 	function show(item: ResultItem) {
 		// @ts-expect-error svelte-simple-modal types predate Svelte 5 components
-		open(ImageDetails, { src: api.imageURL(id, item.index), item, highlight: cls });
+		open(ImageDetails, { src: api.imageURL(id, item.index), item, highlight });
 	}
 </script>
 
@@ -137,14 +145,14 @@
 		<div>
 			<div class="mb-2 text-xs font-semibold text-[var(--text-muted)]">Categories</div>
 			<div class="flex flex-wrap gap-2">
-				{#each [{ class: '', images: job?.done ?? 0, objects: 0, label: 'All images' }, ...categories.map( (c) => ({ ...c, label: c.class }) ), { class: '_none', images: noObjects, objects: 0, label: 'No objects' }] as c}
+				{#each [{ class: '', images: job?.done ?? 0, objects: 0, label: 'All images' }, { class: '_some', images: (job?.done ?? 0) - noObjects, objects: 0, label: 'With matches' }, ...categories.map( (c) => ({ ...c, label: c.class }) ), { class: '_none', images: noObjects, objects: 0, label: 'No objects' }] as c}
 					<button
 						onclick={() => (cls = c.class)}
 						class="relative overflow-hidden rounded-full border px-3 py-1 text-sm {cls === c.class
 							? 'border-[var(--accent)] bg-[var(--accent)] text-white'
 							: 'border-[var(--border)] bg-[var(--surface)] text-[var(--fg)] hover:border-[var(--accent)]'}"
 					>
-						{#if c.class && c.class !== '_none' && cls !== c.class}
+						{#if c.class && !c.class.startsWith('_') && cls !== c.class}
 							<span
 								class="absolute inset-y-0 left-0 bg-[var(--accent-soft)]"
 								style="width: {(100 * c.images) / maxImages}%"
@@ -163,7 +171,7 @@
 
 		<div>
 			<div class="mb-3 text-xs text-[var(--text-muted)] tabular-nums">
-				{total.toLocaleString()} images{cls && cls !== '_none' ? ` containing ${cls}` : ''}
+				{total.toLocaleString()} images{cls === '_some' ? ' with matches' : cls === '_none' ? ' with no matches' : cls ? ` containing ${cls}` : ''}
 			</div>
 			<div class="columns-2 gap-4 md:columns-3 xl:columns-4">
 				{#each items as item (item.index)}
@@ -174,7 +182,7 @@
 						<DetectionImage
 							src={api.imageURL(id, item.index)}
 							{item}
-							highlight={cls}
+							{highlight}
 							labels={false}
 						/>
 						<span
