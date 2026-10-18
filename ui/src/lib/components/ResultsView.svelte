@@ -73,8 +73,12 @@
 	</div>
 {:else}
 	<div class="space-y-6">
-		<section class="overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface)] shadow-sm">
-			<div class="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--border)] px-5 py-3">
+		<section
+			class="overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface)] shadow-sm"
+		>
+			<div
+				class="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--border)] px-5 py-3"
+			>
 				<div class="flex min-w-0 items-center gap-3">
 					<label for="job" class="text-sm font-semibold text-[var(--fg)]">Job</label>
 					<select
@@ -92,11 +96,18 @@
 					</select>
 				</div>
 				{#if job}
-					<span
-						class="rounded-full px-3 py-1 text-xs font-medium {job.status === 'running'
-							? 'bg-[var(--accent-soft)] text-[var(--accent)]'
-							: 'bg-[var(--bg)] text-[var(--text-muted)]'}">{job.status}</span
-					>
+					<div class="flex items-center gap-2">
+						<a
+							href="?tab=performance&run={id}"
+							class="rounded-full border border-[var(--border)] px-3 py-1 text-xs text-[var(--fg)] hover:border-[var(--accent)]"
+							>Run analysis</a
+						>
+						<span
+							class="rounded-full px-3 py-1 text-xs font-medium {job.status === 'running'
+								? 'bg-[var(--accent-soft)] text-[var(--accent)]'
+								: 'bg-[var(--bg)] text-[var(--text-muted)]'}">{job.status}</span
+						>
+					</div>
 				{/if}
 			</div>
 			{#if job}
@@ -114,7 +125,7 @@
 		<div>
 			<div class="mb-2 text-xs font-semibold text-[var(--text-muted)]">Categories</div>
 			<div class="flex flex-wrap gap-2">
-				{#each [{ class: '', images: job?.done ?? 0, objects: 0, label: 'All images' }, ...categories.map((c) => ({ ...c, label: c.class })), { class: '_none', images: noObjects, objects: 0, label: 'No objects' }] as c}
+				{#each [{ class: '', images: job?.done ?? 0, objects: 0, label: 'All images' }, ...categories.map( (c) => ({ ...c, label: c.class }) ), { class: '_none', images: noObjects, objects: 0, label: 'No objects' }] as c}
 					<button
 						onclick={() => (cls = c.class)}
 						class="relative overflow-hidden rounded-full border px-3 py-1 text-sm {cls === c.class
@@ -128,8 +139,10 @@
 							></span>
 						{/if}
 						<span class="relative">{c.label}</span>
-						<span class="relative ml-1 tabular-nums {cls === c.class ? 'opacity-80' : 'text-[var(--text-muted)]'}"
-							>{c.images.toLocaleString()}</span
+						<span
+							class="relative ml-1 tabular-nums {cls === c.class
+								? 'opacity-80'
+								: 'text-[var(--text-muted)]'}">{c.images.toLocaleString()}</span
 						>
 					</button>
 				{/each}
@@ -146,12 +159,19 @@
 						onclick={() => show(item)}
 						class="group relative mb-4 block w-full break-inside-avoid overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface)] text-left shadow-sm transition-shadow hover:shadow-md"
 					>
-						<DetectionImage src={api.imageURL(id, item.index)} {item} highlight={cls} labels={false} />
+						<DetectionImage
+							src={api.imageURL(id, item.index)}
+							{item}
+							highlight={cls}
+							labels={false}
+						/>
 						<span
 							class="absolute top-2 right-2 rounded-full bg-black/60 px-2 py-0.5 text-xs text-white tabular-nums backdrop-blur"
 							>{item.detections.length}</span
 						>
-						<div class="truncate px-3 py-2 font-mono text-xs text-[var(--text-muted)] group-hover:text-[var(--fg)]">
+						<div
+							class="truncate px-3 py-2 font-mono text-xs text-[var(--text-muted)] group-hover:text-[var(--fg)]"
+						>
 							{item.path}
 						</div>
 					</button>

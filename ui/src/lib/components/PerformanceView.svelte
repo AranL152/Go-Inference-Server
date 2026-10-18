@@ -10,7 +10,11 @@
 	import Batching from './Batching.svelte';
 	import GoRuntime from './GoRuntime.svelte';
 	import GpuTimeline from './GpuTimeline.svelte';
-	import type { Gpu, Sample, ServerConfig } from '$lib/stats';
+	import { page } from '$app/state';
+	import { goto } from '$app/navigation';
+	import { api, type Job } from '$lib/api';
+	import { formatDate } from '$lib/utils/date';
+	import type { Gpu, RunPerf, Sample, ServerConfig } from '$lib/stats';
 
 	const ranges = [
 		{ label: '1m', n: 60 },
@@ -18,15 +22,42 @@
 		{ label: '15m', n: 900 }
 	];
 	let range = $state(300);
-	let samples = $state<Sample[]>([]);
+	let liveSamples = $state<Sample[]>([]);
 	let cfg = $state<ServerConfig | null>(null);
 	let error = $state('');
+	let jobs = $state<Job[]>([]);
+
+	// ?run=<job id> shows that job's recorded run instead of the live server
+	const runId = $derived(page.url.searchParams.get('run') ?? '');
+	let run = $state<RunPerf | null>(null);
+	let runError = $state('');
+	$effect(() => {
+		const id = runId;
+		run = null;
+		runError = '';
+		if (!id) return;
+		fetch(`/api/jobs/${id}/perf`)
+			.then(async (r) => {
+				const body = await r.json();
+				if (!r.ok) throw new Error(body.error);
+				return body as RunPerf;
+			})
+			.then((p) => runId === id && (run = p))
+			.catch((e) => (runError = (e as Error).message));
+	});
+	const samples = $derived(runId ? (run?.samples ?? []) : liveSamples);
+	const win = $derived(runId ? Math.max(samples.length, 10) : range);
+	const runJob = $derived(jobs.find((j) => j.id === runId));
+
+	function pickRun(id: string) {
+		goto(`?tab=performance${id ? `&run=${id}` : ''}`, { keepFocus: true, noScroll: true });
+	}
 
 	async function poll() {
-		const since = samples.at(-1)?.t ?? 0;
+		const since = liveSamples.at(-1)?.t ?? 0;
 		try {
 			const r = await fetch(`/api/system?since=${since}`).then((r) => r.json());
-			samples = [...samples, ...r.samples].slice(-900);
+			liveSamples = [...liveSamples, ...r.samples].slice(-900);
 			error = '';
 		} catch {
 			error = 'Lost connection to the server.';
@@ -38,9 +69,19 @@
 			.then((r) => r.json())
 			.then((c) => (cfg = c))
 			.catch(() => {});
+		const loadJobs = () =>
+			api
+				.jobs()
+				.then((j) => (jobs = j))
+				.catch(() => {});
+		loadJobs();
 		poll();
 		const t = setInterval(poll, 1000);
-		return () => clearInterval(t);
+		const tj = setInterval(loadJobs, 5000);
+		return () => {
+			clearInterval(t);
+			clearInterval(tj);
+		};
 	});
 
 	const model = $derived(cfg?.model ?? '');
@@ -49,7 +90,9 @@
 	const col = (f: (x: Sample) => number) => samples.map(f);
 	const gcol = (f: (g: Gpu) => number) => samples.map((x) => (x.gpu ? f(x.gpu) : 0));
 	const gb = (mb: number) => (mb / 1024).toFixed(1);
-	const one = (name: string, values: number[], color = 'var(--series)'): Series[] => [{ name, color, values }];
+	const one = (name: string, values: number[], color = 'var(--series)'): Series[] => [
+		{ name, color, values }
+	];
 
 	const stages = [
 		{ key: 'decode_ms', name: 'JPEG decode' },
@@ -118,12 +161,42 @@
 	const numbers = $derived(
 		s
 			? [
-					{ label: 'Throughput', value: Math.round(s.req_per_sec).toLocaleString(), unit: 'img/s', spark: col((x) => x.req_per_sec) },
-					{ label: 'p99 latency', value: s.p99_ms.toFixed(0), unit: 'ms', spark: col((x) => x.p99_ms) },
-					{ label: 'GPU busy', value: `${s.gpu?.util ?? 0}`, unit: '%', spark: gcol((g) => g.util) },
-					{ label: 'GPU memory', value: s.gpu ? gb(s.gpu.mem_used_mb) : '0', unit: 'GB', spark: gcol((g) => g.mem_used_mb) },
-					{ label: 'Host to GPU', value: Math.round(s.gpu?.pcie_rx_mbs ?? 0).toLocaleString(), unit: 'MB/s', spark: gcol((g) => g.pcie_rx_mbs) },
-					{ label: 'GPU power', value: Math.round(s.gpu?.power_w ?? 0).toString(), unit: 'W', spark: gcol((g) => g.power_w) }
+					{
+						label: 'Throughput',
+						value: Math.round(s.req_per_sec).toLocaleString(),
+						unit: 'img/s',
+						spark: col((x) => x.req_per_sec)
+					},
+					{
+						label: 'p99 latency',
+						value: s.p99_ms.toFixed(0),
+						unit: 'ms',
+						spark: col((x) => x.p99_ms)
+					},
+					{
+						label: 'GPU busy',
+						value: `${s.gpu?.util ?? 0}`,
+						unit: '%',
+						spark: gcol((g) => g.util)
+					},
+					{
+						label: 'GPU memory',
+						value: s.gpu ? gb(s.gpu.mem_used_mb) : '0',
+						unit: 'GB',
+						spark: gcol((g) => g.mem_used_mb)
+					},
+					{
+						label: 'Host to GPU',
+						value: Math.round(s.gpu?.pcie_rx_mbs ?? 0).toLocaleString(),
+						unit: 'MB/s',
+						spark: gcol((g) => g.pcie_rx_mbs)
+					},
+					{
+						label: 'GPU power',
+						value: Math.round(s.gpu?.power_w ?? 0).toString(),
+						unit: 'W',
+						spark: gcol((g) => g.power_w)
+					}
 				]
 			: []
 	);
@@ -142,7 +215,9 @@
 
 <div class="space-y-5">
 	<div class="flex flex-wrap items-center justify-between gap-3">
-		<div class="flex gap-1 overflow-x-auto rounded-xl bg-[var(--surface)] p-1 shadow-sm ring-1 ring-[var(--border)]">
+		<div
+			class="flex gap-1 overflow-x-auto rounded-xl bg-[var(--surface)] p-1 shadow-sm ring-1 ring-[var(--border)]"
+		>
 			{#each views as v}
 				<button
 					onclick={() => (view = v.id)}
@@ -152,49 +227,95 @@
 				>
 			{/each}
 		</div>
-		<div class="flex items-center gap-3">
-			<span class="hidden text-xs text-[var(--text-muted)] lg:inline">
-				{s?.gpu?.name ?? 'GPU'} · {model || 'model'}
-			</span>
-			<div class="flex rounded-full bg-[var(--surface)] p-0.5 text-xs ring-1 ring-[var(--border)]">
-				{#each ranges as r}
-					<button
-						onclick={() => (range = r.n)}
-						class="rounded-full px-3 py-1 {range === r.n
-							? 'bg-[var(--fg)] text-[var(--bg)]'
-							: 'text-[var(--text-muted)] hover:text-[var(--fg)]'}">{r.label}</button
+		<div class="flex flex-wrap items-center gap-3">
+			<select
+				value={runId}
+				onchange={(e) => pickRun(e.currentTarget.value)}
+				class="max-w-72 rounded-lg border border-[var(--border)] bg-[var(--surface)] py-1 pr-8 pl-3 text-sm text-[var(--fg)] focus:border-[var(--accent)] focus:outline-none"
+			>
+				<option value="">Live</option>
+				{#each jobs as j}
+					<option value={j.id}>Run {formatDate(j.created_at)} · {j.source.split('/').at(-1)}</option
 					>
 				{/each}
-			</div>
+			</select>
+			{#if !runId}
+				<div
+					class="flex rounded-full bg-[var(--surface)] p-0.5 text-xs ring-1 ring-[var(--border)]"
+				>
+					{#each ranges as r}
+						<button
+							onclick={() => (range = r.n)}
+							class="rounded-full px-3 py-1 {range === r.n
+								? 'bg-[var(--fg)] text-[var(--bg)]'
+								: 'text-[var(--text-muted)] hover:text-[var(--fg)]'}">{r.label}</button
+						>
+					{/each}
+				</div>
+			{/if}
 		</div>
 	</div>
 
+	{#if runId}
+		<div
+			class="flex flex-wrap gap-x-5 gap-y-1 rounded-xl bg-[var(--surface)] px-4 py-2 text-xs text-[var(--text-muted)] tabular-nums ring-1 ring-[var(--border)]"
+		>
+			{#if runError}
+				<span class="text-[var(--status-critical)]">{runError}</span>
+			{:else if !run}
+				<span>Loading run…</span>
+			{:else}
+				<span
+					>{new Date(run.start).toLocaleTimeString()} to {new Date(run.end).toLocaleTimeString()} · {(
+						(Date.parse(run.end) - Date.parse(run.start)) /
+						1000
+					).toFixed(1)} s</span
+				>
+				{#if runJob}
+					<span class="font-mono">{runJob.source}</span>
+					<span
+						>{runJob.done.toLocaleString()} images · {Math.round(
+							runJob.images_per_sec
+						).toLocaleString()} img/s · {runJob.status}</span
+					>
+				{/if}
+			{/if}
+		</div>
+	{/if}
+
 	{#if error}
-		<div class="flex items-center gap-3 rounded-xl border border-[var(--status-critical)] bg-[var(--surface)] px-4 py-3 text-sm text-[var(--fg)]">
+		<div
+			class="flex items-center gap-3 rounded-xl border border-[var(--status-critical)] bg-[var(--surface)] px-4 py-3 text-sm text-[var(--fg)]"
+		>
 			<span class="font-bold text-[var(--status-critical)]">✕</span>{error}
 		</div>
 	{/if}
 
 	{#if view === 'analysis'}
-		<Bottleneck {samples} {cfg} />
+		{#key runId}
+			<Bottleneck {samples} {cfg} span={runId ? samples.length : 5} />
 
-		<div class="grid items-start gap-4 lg:grid-cols-2">
-			<CpuProfile />
-			<GoTrace />
-		</div>
+			<div class="grid items-start gap-4 lg:grid-cols-2">
+				<CpuProfile live={!runId} data={run?.cpu ?? null} />
+				<GoTrace live={!runId} data={run?.trace ?? null} />
+			</div>
 
-		<div class="grid items-start gap-4 lg:grid-cols-2">
-			<Batching />
-			<GoRuntime {samples} {range} />
-		</div>
+			<div class="grid items-start gap-4 lg:grid-cols-2">
+				<Batching live={!runId} data={run?.batching ?? null} />
+				<GoRuntime {samples} range={win} span={runId ? samples.length : 10} />
+			</div>
+		{/key}
 
 		{#snippet breakdown()}
-			<Chart series={stageSeries} {times} window={range} stacked unit=" ms" height={180} />
+			<Chart series={stageSeries} {times} window={win} stacked unit=" ms" height={180} />
 			<div class="mt-4 grid grid-cols-2 gap-x-6 gap-y-1.5 text-xs tabular-nums sm:grid-cols-4">
 				{#each stages as st, i}
 					<div class="flex items-center justify-between gap-2">
 						<span class="flex min-w-0 items-center gap-1.5 text-[var(--text-muted)]">
-							<span class="inline-block h-2 w-2 shrink-0 rounded-full" style="background: var(--cat-{i + 1})"></span>
+							<span
+								class="inline-block h-2 w-2 shrink-0 rounded-full"
+								style="background: var(--cat-{i + 1})"
+							></span>
 							<span class="truncate">{st.name}</span>
 						</span>
 						<span class="text-[var(--fg)]">{stageNow[i].toFixed(1)}</span>
@@ -205,7 +326,11 @@
 				</div>
 			</div>
 		{/snippet}
-		{@render card('Latency budget', 'decode and letterbox per image, GPU stages per batch', breakdown)}
+		{@render card(
+			'Latency budget',
+			'decode and letterbox per image, GPU stages per batch',
+			breakdown
+		)}
 
 		<GpuTimeline {model} />
 		{#snippet kp()}<KernelProfile {model} />{/snippet}
@@ -219,11 +344,19 @@
 						<div class="px-3 pt-2">
 							<div class="text-xs text-[var(--text-muted)]">{n.label}</div>
 							<div class="text-lg font-semibold text-[var(--fg)] tabular-nums">
-								{n.value}<span class="ml-1 text-xs font-normal text-[var(--text-muted)]">{n.unit}</span>
+								{n.value}<span class="ml-1 text-xs font-normal text-[var(--text-muted)]"
+									>{n.unit}</span
+								>
 							</div>
 						</div>
 						<div class="px-1 pb-1">
-							<Chart series={one(n.label, n.spark)} window={range} height={28} compact frame={false} />
+							<Chart
+								series={one(n.label, n.spark)}
+								window={win}
+								height={28}
+								compact
+								frame={false}
+							/>
 						</div>
 					</div>
 				{/each}
@@ -236,7 +369,9 @@
 					>
 						<div class="flex items-center justify-between gap-2">
 							<span class="truncate text-xs text-[var(--fg)]">{a.name}</span>
-							<span class="text-xs font-bold" style="color: {levelStyle[a.level].color}">{levelStyle[a.level].icon}</span>
+							<span class="text-xs font-bold" style="color: {levelStyle[a.level].color}"
+								>{levelStyle[a.level].icon}</span
+							>
 						</div>
 						<div class="truncate text-[11px] text-[var(--text-muted)]">{a.detail}</div>
 					</div>
@@ -246,7 +381,15 @@
 	{:else if view === 'series'}
 		<h2 class="text-sm font-semibold text-[var(--text-muted)]">Pipeline</h2>
 		<div class="grid gap-4 lg:grid-cols-2">
-			{#snippet thr()}<Chart series={one('Images per second', col((x) => x.req_per_sec))} {times} window={range} unit="/s" />{/snippet}
+			{#snippet thr()}<Chart
+					series={one(
+						'Images per second',
+						col((x) => x.req_per_sec)
+					)}
+					{times}
+					window={win}
+					unit="/s"
+				/>{/snippet}
 			{@render card('Throughput', 'images per second', thr)}
 			{#snippet lat()}
 				<Chart
@@ -255,39 +398,121 @@
 						{ name: 'p99', color: 'var(--series-2)', values: col((x) => x.p99_ms) }
 					]}
 					{times}
-					window={range}
+					window={win}
 					unit=" ms"
 				/>
 			{/snippet}
 			{@render card('Request latency', 'milliseconds', lat)}
-			{#snippet bat()}<Chart series={one('Batch size', col((x) => x.avg_batch))} {times} window={range} />{/snippet}
+			{#snippet bat()}<Chart
+					series={one(
+						'Batch size',
+						col((x) => x.avg_batch)
+					)}
+					{times}
+					window={win}
+				/>{/snippet}
 			{@render card('Batch size', 'images per GPU run', bat)}
-			{#snippet que()}<Chart series={one('Queue wait', col((x) => x.queue_ms))} {times} window={range} unit=" ms" />{/snippet}
+			{#snippet que()}<Chart
+					series={one(
+						'Queue wait',
+						col((x) => x.queue_ms)
+					)}
+					{times}
+					window={win}
+					unit=" ms"
+				/>{/snippet}
 			{@render card('Queue wait', 'submit to GPU start', que)}
-			{#snippet gpuRun()}<Chart series={one('GPU compute', col((x) => x.compute_ms))} {times} window={range} unit=" ms" />{/snippet}
+			{#snippet gpuRun()}<Chart
+					series={one(
+						'GPU compute',
+						col((x) => x.compute_ms)
+					)}
+					{times}
+					window={win}
+					unit=" ms"
+				/>{/snippet}
 			{@render card('GPU compute per batch', 'milliseconds', gpuRun)}
-			{#snippet lanes()}<Chart series={one('Lanes busy', col((x) => x.lane_busy))} {times} window={range} max={100} unit="%" />{/snippet}
+			{#snippet lanes()}<Chart
+					series={one(
+						'Lanes busy',
+						col((x) => x.lane_busy)
+					)}
+					{times}
+					window={win}
+					max={100}
+					unit="%"
+				/>{/snippet}
 			{@render card('Inference lanes busy', 'percent of time', lanes)}
 		</div>
 
 		<h2 class="text-sm font-semibold text-[var(--text-muted)]">Go runtime</h2>
 		<div class="grid gap-4 lg:grid-cols-2">
-			{#snippet alloc()}<Chart series={one('Allocated per request', col((x) => x.alloc_bytes_per_req / 1024))} {times} window={range} unit=" KB" />{/snippet}
+			{#snippet alloc()}<Chart
+					series={one(
+						'Allocated per request',
+						col((x) => x.alloc_bytes_per_req / 1024)
+					)}
+					{times}
+					window={win}
+					unit=" KB"
+				/>{/snippet}
 			{@render card('Allocated per request', 'kilobytes', alloc)}
-			{#snippet gccpu()}<Chart series={one('GC share of CPU', col((x) => x.gc_cpu_pct))} {times} window={range} unit="%" />{/snippet}
+			{#snippet gccpu()}<Chart
+					series={one(
+						'GC share of CPU',
+						col((x) => x.gc_cpu_pct)
+					)}
+					{times}
+					window={win}
+					unit="%"
+				/>{/snippet}
 			{@render card('GC share of CPU', 'percent of the CPU the server used', gccpu)}
-			{#snippet pause()}<Chart series={one('GC pause p99', col((x) => x.gc_pause_p99_us))} {times} window={range} unit=" µs" />{/snippet}
+			{#snippet pause()}<Chart
+					series={one(
+						'GC pause p99',
+						col((x) => x.gc_pause_p99_us)
+					)}
+					{times}
+					window={win}
+					unit=" µs"
+				/>{/snippet}
 			{@render card('GC pause p99', 'microseconds', pause)}
-			{#snippet sched()}<Chart series={one('Wait for CPU p99', col((x) => x.sched_p99_us))} {times} window={range} unit=" µs" />{/snippet}
+			{#snippet sched()}<Chart
+					series={one(
+						'Wait for CPU p99',
+						col((x) => x.sched_p99_us)
+					)}
+					{times}
+					window={win}
+					unit=" µs"
+				/>{/snippet}
 			{@render card('Goroutine wait for CPU p99', 'microseconds from runnable to running', sched)}
 		</div>
 
 		<h2 class="text-sm font-semibold text-[var(--text-muted)]">GPU</h2>
 		<div class="grid gap-4 lg:grid-cols-2">
-			{#snippet gu()}<Chart series={one('GPU busy', gcol((g) => g.util))} {times} window={range} max={100} unit="%" />{/snippet}
+			{#snippet gu()}<Chart
+					series={one(
+						'GPU busy',
+						gcol((g) => g.util)
+					)}
+					{times}
+					window={win}
+					max={100}
+					unit="%"
+				/>{/snippet}
 			{@render card('GPU busy', 'time any kernel ran', gu)}
 			{#snippet gm()}
-				<Chart series={one('GPU memory', gcol((g) => g.mem_used_mb / 1024))} {times} window={range} max={(s?.gpu?.mem_total_mb ?? 1024) / 1024} unit=" GB" />
+				<Chart
+					series={one(
+						'GPU memory',
+						gcol((g) => g.mem_used_mb / 1024)
+					)}
+					{times}
+					window={win}
+					max={(s?.gpu?.mem_total_mb ?? 1024) / 1024}
+					unit=" GB"
+				/>
 			{/snippet}
 			{@render card('GPU memory', `of ${s?.gpu ? gb(s.gpu.mem_total_mb) : '0'} GB`, gm)}
 			{#snippet pci()}
@@ -297,16 +522,47 @@
 						{ name: 'GPU to host', color: 'var(--series-2)', values: gcol((g) => g.pcie_tx_mbs) }
 					]}
 					{times}
-					window={range}
+					window={win}
 					unit=" MB/s"
 				/>
 			{/snippet}
-			{@render card('PCIe traffic', s?.gpu ? `Gen ${s.gpu.pcie_gen} x${s.gpu.pcie_width}` : '', pci)}
-			{#snippet pw()}<Chart series={one('Power', gcol((g) => g.power_w))} {times} window={range} max={s?.gpu?.power_limit_w || undefined} unit=" W" />{/snippet}
+			{@render card(
+				'PCIe traffic',
+				s?.gpu ? `Gen ${s.gpu.pcie_gen} x${s.gpu.pcie_width}` : '',
+				pci
+			)}
+			{#snippet pw()}<Chart
+					series={one(
+						'Power',
+						gcol((g) => g.power_w)
+					)}
+					{times}
+					window={win}
+					max={s?.gpu?.power_limit_w || undefined}
+					unit=" W"
+				/>{/snippet}
 			{@render card('Power draw', `limit ${Math.round(s?.gpu?.power_limit_w ?? 0)} W`, pw)}
-			{#snippet tmp()}<Chart series={one('Temperature', gcol((g) => g.temp_c))} {times} window={range} max={100} unit="°C" />{/snippet}
+			{#snippet tmp()}<Chart
+					series={one(
+						'Temperature',
+						gcol((g) => g.temp_c)
+					)}
+					{times}
+					window={win}
+					max={100}
+					unit="°C"
+				/>{/snippet}
 			{@render card('Temperature', 'degrees Celsius', tmp)}
-			{#snippet clk()}<Chart series={one('SM clock', gcol((g) => g.sm_clock_mhz))} {times} window={range} max={s?.gpu?.sm_clock_max_mhz || undefined} unit=" MHz" />{/snippet}
+			{#snippet clk()}<Chart
+					series={one(
+						'SM clock',
+						gcol((g) => g.sm_clock_mhz)
+					)}
+					{times}
+					window={win}
+					max={s?.gpu?.sm_clock_max_mhz || undefined}
+					unit=" MHz"
+				/>{/snippet}
 			{@render card('SM clock', `max ${s?.gpu?.sm_clock_max_mhz ?? 0} MHz`, clk)}
 		</div>
 
@@ -319,7 +575,7 @@
 						{ name: 'Inference server', color: 'var(--series-2)', values: col((x) => x.proc_cpu) }
 					]}
 					{times}
-					window={range}
+					window={win}
 					max={100}
 					unit="%"
 				/>
@@ -328,11 +584,19 @@
 			{#snippet ram()}
 				<Chart
 					series={[
-						{ name: 'All processes', color: 'var(--series)', values: col((x) => x.mem_used_mb / 1024) },
-						{ name: 'Inference server', color: 'var(--series-2)', values: col((x) => x.proc_rss_mb / 1024) }
+						{
+							name: 'All processes',
+							color: 'var(--series)',
+							values: col((x) => x.mem_used_mb / 1024)
+						},
+						{
+							name: 'Inference server',
+							color: 'var(--series-2)',
+							values: col((x) => x.proc_rss_mb / 1024)
+						}
 					]}
 					{times}
-					window={range}
+					window={win}
 					max={(s?.mem_total_mb ?? 1024) / 1024}
 					unit=" GB"
 				/>
@@ -342,8 +606,19 @@
 				<div class="grid grid-cols-4 gap-2 md:grid-cols-8">
 					{#each s?.cores ?? [] as c, i}
 						<div>
-							<Chart series={one(`CPU ${i}`, samples.map((x) => x.cores[i] ?? 0))} window={range} max={100} height={40} compact />
-							<div class="mt-0.5 flex justify-between text-[10px] text-[var(--text-muted)] tabular-nums">
+							<Chart
+								series={one(
+									`CPU ${i}`,
+									samples.map((x) => x.cores[i] ?? 0)
+								)}
+								window={win}
+								max={100}
+								height={40}
+								compact
+							/>
+							<div
+								class="mt-0.5 flex justify-between text-[10px] text-[var(--text-muted)] tabular-nums"
+							>
 								<span>CPU {i}</span><span>{c.toFixed(0)}%</span>
 							</div>
 						</div>
@@ -351,7 +626,14 @@
 				</div>
 			{/snippet}
 			{@render card('Per core', 'percent busy', cores, true)}
-			{#snippet gor()}<Chart series={one('Goroutines', col((x) => x.goroutines))} {times} window={range} />{/snippet}
+			{#snippet gor()}<Chart
+					series={one(
+						'Goroutines',
+						col((x) => x.goroutines)
+					)}
+					{times}
+					window={win}
+				/>{/snippet}
 			{@render card('Goroutines', 'server concurrency', gor, true)}
 		</div>
 	{:else}
