@@ -102,7 +102,12 @@ func fill(planes ...[]byte) {
 
 // PreprocessLetterbox decodes on a pooled decoder and returns a pooled uint8 input
 func (p *cpuDecoderPool) PreprocessLetterbox(jpeg []byte) ([]byte, Letterbox, error) {
+	w := region(stageDecoderWait)
 	d := <-p.free
+	w.End()
+	setStage(stageDecode)
+	defer setStage(stageRequest)
+	defer region(stageDecode).End()
 	defer func() { p.free <- d }()
 	t := time.Now()
 	img, fw, fh, err := d.decodeFitLong(jpeg, letterboxSize)

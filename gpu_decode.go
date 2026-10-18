@@ -434,7 +434,13 @@ func (p *gpuDecoderPool) Backend() nvjpegBackend { return p.backend }
 // entirely via the GPU (nvJPEG decode + NPP resize) plus a cheap CPU normalize.
 // Drop-in replacement for the CPU preprocessReader's output.
 func (p *gpuDecoderPool) Preprocess(jpeg []byte) ([]float32, error) {
-	return p.preprocessWith(<-p.free, jpeg)
+	w := region(stageDecoderWait)
+	d := <-p.free
+	w.End()
+	setStage(stageDecode)
+	defer setStage(stageRequest)
+	defer region(stageDecode).End()
+	return p.preprocessWith(d, jpeg)
 }
 
 // preprocessWith runs decode+normalize on an already-checked-out context and

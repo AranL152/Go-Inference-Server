@@ -81,6 +81,7 @@ func (r *statusRecorder) WriteHeader(code int) {
 // instrument wraps a handler with latency + status-code recording.
 func instrument(m *requestMetrics, h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		setStage(stageRequest)
 		rec := &statusRecorder{ResponseWriter: w, code: http.StatusOK}
 		start := time.Now()
 		h(rec, r)

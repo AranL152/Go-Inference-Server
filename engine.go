@@ -611,7 +611,12 @@ func (e *Engine) submit(input []byte) (Prediction, error) {
 // it drains pending requests and closes inferCh, unwinding the rest of the
 // pipeline.
 func (e *Engine) collect() {
+	setStage(stageBatcher)
+	r := region(stageBatcher)
+	defer func() { r.End() }()
 	for {
+		r.End()
+		r = region(stageBatcher)
 		// Block for the first request of a batch (or shutdown).
 		var first *batchRequest
 		select {
@@ -863,7 +868,12 @@ func (e *Engine) packAndSend(batch []*batchRequest, span *batchSpan) {
 // busy fraction.
 func (e *Engine) inferLoop(lane int) {
 	defer e.inferWG.Done()
+	setStage(stageInfer)
+	r := region(stageInfer)
+	defer func() { r.End() }()
 	for {
+		r.End()
+		r = region(stageInfer)
 		idleStart := time.Now()
 		pb, ok := <-e.inferCh
 		if !ok {
@@ -1032,7 +1042,12 @@ func (e *Engine) inferLoop(lane int) {
 // lanes and the other unpack workers.
 func (e *Engine) unpackLoop(worker int) {
 	defer e.unpackWG.Done()
+	setStage(stageUnpack)
+	r := region(stageUnpack)
+	defer func() { r.End() }()
 	for ib := range e.unpackCh {
+		r.End()
+		r = region(stageUnpack)
 		var logits []float32
 		if ib.logits != nil {
 			// -device-binding: lane-copied host logits; pooled slice is

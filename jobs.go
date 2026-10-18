@@ -174,6 +174,7 @@ func (st *jobStore) run(j *job) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			setStage(stageRequest)
 			for i := range next {
 				st.process(j, i)
 			}
