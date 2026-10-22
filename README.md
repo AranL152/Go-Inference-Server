@@ -8,6 +8,8 @@ The point of the repo is throughput on one card: it went from 345 req/s to about
 18,900 req/s on a single RTX 4080 SUPER, and everything in `loadtest/` exists so
 that number is measured rather than claimed.
 
+## Demo
+
 https://github.com/user-attachments/assets/a75a0120-4292-459c-906b-d290d67465fb
 
 ## What's in it
