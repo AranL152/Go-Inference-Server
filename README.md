@@ -8,7 +8,7 @@ The point of the repo is throughput on one card: it went from 345 req/s to about
 18,900 req/s on a single RTX 4080 SUPER, and everything in `loadtest/` exists so
 that number is measured rather than claimed.
 
-**[Demo video](docs/demo.mp4)**: the object detection web UI running a job end to end.
+**[Demo video](docs/demo.mp4)**: the web UI running detection over COCO val2017, browsing results by class, and the job's performance view.
 
 ## What's in it
 
